@@ -91,6 +91,8 @@ pub enum ClewdrError {
     Json(#[from] serde_json::Error),
     #[error("Regex error: {0}")]
     Regex(#[from] regex::Error),
+    #[error("Rquest error: {0}")]
+    Rquest(#[from] rquest::Error),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";

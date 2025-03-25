@@ -87,13 +87,13 @@ impl ClewdTransformer {
         impl std::future::Future<Output = Result<(), ClewdrError>> + Send,
     >
     where
-        S: Stream<Item = Result<Bytes, ClewdrError>> + Send + 'static,
+        S: Stream<Item = Result<Bytes, rquest::Error>> + Send + 'static,
     {
         AsyncTryStream::new(move |mut y| async move {
             let mut transformer = self;
             pin_mut!(input);
 
-            let re = Regex::new(r"event: [\w]+\s*|\r").unwrap();
+            let re = Regex::new(r"event: [\w]+\s*|\r")?;
 
             while let Some(chunk) = input.next().await {
                 let chunk = chunk?;
