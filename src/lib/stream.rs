@@ -1,53 +1,54 @@
 use bytes::Bytes;
 use futures::{StreamExt, pin_mut};
+use parking_lot::RwLock;
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::{Value, json, to_string_pretty};
 use std::mem;
 use tokio_stream::Stream;
 use tokio_util::sync::CancellationToken;
-use transform_stream::AsyncTryStream;
+use tracing::warn;
+use transform_stream::{AsyncTryStream, Yielder};
 
-use crate::utils::ClewdrError;
+use crate::utils::{ClewdrError, DANGER_CHARS, generic_fixes, index_of_any};
 
 #[derive(Clone)]
-pub struct ClewdConfig {
+pub struct ClewdrConfig {
     version: String,
     model: String,
     streaming: bool,
     min_size: usize,
     cancel: CancellationToken,
+    prevent_imperson: bool,
 }
 
-pub struct ClewdTransformer {
-    config: ClewdConfig,
+pub struct ClewdrTransformer {
+    config: ClewdrConfig,
     comp_ok: String,
     comp_raw: String,
     comp_all: Vec<String>,
     recv_length: usize,
-    ended: bool,
     hard_censor: bool,
-    impersonated: bool,
-    error: Option<String>,
+    impersonated: RwLock<bool>,
+    error: RwLock<Option<String>>,
     comp_model: String,
 }
 
-impl ClewdTransformer {
-    pub fn new(config: ClewdConfig) -> Self {
+impl ClewdrTransformer {
+    pub fn new(config: ClewdrConfig) -> Self {
         Self {
             config,
             comp_ok: String::new(),
             comp_raw: String::new(),
             comp_all: Vec::new(),
             recv_length: 0,
-            ended: false,
             hard_censor: false,
-            impersonated: false,
-            error: None,
+            impersonated: RwLock::new(false),
+            error: RwLock::new(None),
             comp_model: String::new(),
         }
     }
 
-    fn build(&self, selection: String) -> Result<String, ClewdrError> {
+    fn build(&self, selection: &str) -> String {
         if self.config.streaming {
             let completion = json!({
                 "choices": [{
@@ -56,7 +57,7 @@ impl ClewdTransformer {
                     }
                 }]
             });
-            Ok(format!("data: {}\n\n", serde_json::to_string(&completion)?))
+            format!("data: {}\n\n", serde_json::to_string(&completion).unwrap())
         } else {
             let completion = json!({
                 "choices": [{
@@ -65,17 +66,191 @@ impl ClewdTransformer {
                     }
                 }]
             });
-            Ok(serde_json::to_string(&completion)?)
+            serde_json::to_string(&completion).unwrap()
         }
     }
 
     fn collect_buf(&mut self) -> String {
         let mut valid: Vec<char> = self.comp_ok.chars().collect();
         let selection: String = valid
-            .drain(0..self.config.min_size.min(valid.len()))
+            .drain(..self.config.min_size.min(valid.len()))
             .collect();
         self.comp_ok = valid.into_iter().collect();
         selection
+    }
+
+    async fn end_early(&self, y: &mut Yielder<Result<String, ClewdrError>>) {
+        if self.config.cancel.is_cancelled() {
+            return;
+        }
+        if self.config.streaming {
+            y.yield_ok("data: [DONE]\n\n".to_string()).await;
+        }
+        self.config.cancel.cancel();
+    }
+
+    async fn err_json(&self, err: Value, y: &mut Yielder<Result<String, ClewdrError>>) {
+        warn!("Error: {}", to_string_pretty(&err).unwrap());
+        let code = err
+            .get("status")
+            .or(err.get("code"))
+            .or(err.get("type"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        let message = err
+            .get("message")
+            .or(err.get("description"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        let message = format!(
+            "## {}\n**{} error**:\n{}\n\n```json\n{}\n```",
+            self.config.version, self.config.model, code, message
+        );
+        *self.error.write() = Some(message.clone());
+        y.yield_ok(self.build(&message)).await;
+        self.end_early(y).await;
+    }
+
+    async fn err(&self, err: ClewdrError, y: &mut Yielder<Result<String, ClewdrError>>) {
+        warn!("Error: {}", err);
+        let message = format!(
+            "## {}\n**{} error**:\n{}\n\nFAQ: https://rentry.org/teralomaniac_clewd",
+            self.config.version, self.config.model, err
+        );
+        *self.error.write() = Some(message.clone());
+        y.yield_ok(self.build(&message)).await;
+        self.end_early(y).await;
+    }
+
+    async fn parse_buf(
+        &mut self,
+        buf: &str,
+        y: &mut Yielder<Result<String, ClewdrError>>,
+    ) -> Result<(), ClewdrError> {
+        let mut delay = false;
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if self.config.cancel.is_cancelled() {
+            return Ok(());
+        }
+        let mut parsed = serde_json::from_str::<Value>(buf)?;
+        if let Some(error) = parsed.get("error") {
+            return Ok(self.err_json(error.clone(), y).await);
+        }
+        if self.config.model.is_empty() {
+            if let Some(model) = parsed.get("model").and_then(|m| m.as_str()) {
+                self.comp_model = model.to_string();
+            }
+        }
+        let completion = parsed
+            .get("completion")
+            .or(parsed.pointer("/delta/text"))
+            .or(parsed.pointer("/choices/0/delta/content"))
+            .and_then(|c| c.as_str())
+            .map(|c| c.to_string());
+        if let Some(content) = completion {
+            let new_completion = generic_fixes(&content);
+            parsed.as_object_mut().map(|o| {
+                o.insert("completion".to_string(), json!(new_completion));
+            });
+            self.comp_ok += &new_completion;
+            self.comp_all.push(new_completion.clone());
+            delay = self.comp_ok.ends_with(DANGER_CHARS.as_slice())
+                || new_completion.starts_with(DANGER_CHARS.as_slice());
+        }
+        if self.config.streaming {
+            if delay {
+                self.impersonation_check(&self.comp_ok, y).await?;
+            }
+            while !delay && self.comp_ok.len() >= self.config.min_size {
+                let selection = self.collect_buf();
+                y.yield_ok(self.build(&selection)).await;
+            }
+        } else {
+            if delay {
+                self.impersonation_check(self.comp_all.join("").as_str(), y)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn impersonation_check(
+        &self,
+        reply: &str,
+        y: &mut Yielder<Result<String, ClewdrError>>,
+    ) -> Result<(), ClewdrError> {
+        let fake_any = index_of_any(reply, None);
+        if fake_any > -1 {
+            *self.impersonated.write() = true;
+            if self.config.prevent_imperson {
+                let selection = reply[..fake_any as usize].to_string();
+                let build = self.build(&selection);
+                y.yield_ok(build).await;
+                self.end_early(y).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn transform(
+        &mut self,
+        chunk: Result<Bytes, rquest::Error>,
+        y: &mut Yielder<Result<String, ClewdrError>>,
+    ) -> Result<(), ClewdrError> {
+        let transformer = self;
+        let re = Regex::new(r"event: [\w]+\s*|\r")?;
+        let chunk = chunk?;
+
+        transformer.recv_length += chunk.len();
+        // Decode Bytes to String, assuming UTF-8
+        let chunk_str = String::from_utf8(chunk.to_vec())?;
+        transformer.comp_raw += &re.replace_all(&chunk_str, "");
+        let old_raw = mem::take(&mut transformer.comp_raw);
+        let mut substr = old_raw.split("\n\n").collect::<Vec<_>>();
+        let last_msg = substr.pop().map(|s| s.to_string());
+        transformer.comp_raw = last_msg.unwrap_or_default();
+
+        for i in substr {
+            transformer.parse_buf(i, y).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush(
+        &mut self,
+        y: &mut Yielder<Result<String, ClewdrError>>,
+    ) -> Result<(), ClewdrError> {
+        // Flush logic
+        let transformer = self;
+        if !transformer.comp_raw.is_empty() {
+            let raw_clone = transformer.comp_raw.clone();
+            transformer.parse_buf(raw_clone.as_str(), y).await?;
+        }
+
+        if transformer.config.streaming {
+            if !transformer.comp_ok.is_empty() {
+                y.yield_ok(transformer.build(&transformer.comp_ok)).await;
+            }
+        } else {
+            y.yield_ok(transformer.build(transformer.comp_all.join("").as_str()))
+                .await;
+        }
+        if transformer.comp_all.first().map(|s|s.contains("I apologize, but I will not provide any responses that violate Anthropic's Acceptable Use Policy or could promote harm.")).unwrap_or(false) {
+            transformer.hard_censor = true;
+        }
+        if !transformer.config.cancel.is_cancelled() && transformer.comp_all.is_empty() {
+            let err = format!(
+                "## {}\n**error**:\n\n```\nReceived no valid replies at all\n```\n",
+                transformer.config.version
+            );
+            y.yield_ok(transformer.build(&err)).await;
+        }
+        if transformer.config.streaming {
+            y.yield_ok("data: [DONE]\n\n".to_string()).await;
+        }
+        Ok(())
     }
 
     pub fn transform_stream<S>(
@@ -93,117 +268,15 @@ impl ClewdTransformer {
             let mut transformer = self;
             pin_mut!(input);
 
-            let re = Regex::new(r"event: [\w]+\s*|\r")?;
-
             while let Some(chunk) = input.next().await {
-                let chunk = chunk?;
-                if transformer.ended || transformer.config.cancel.is_cancelled() {
-                    continue;
-                }
-
-                transformer.recv_length += chunk.len();
-                // Decode Bytes to String, assuming UTF-8
-                let chunk_str = match String::from_utf8(chunk.to_vec()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let err_msg = format!("UTF-8 decoding error: {}", e);
-                        transformer.error = Some(err_msg.clone());
-                        transformer.ended = true;
-                        y.yield_ok(transformer.build(err_msg)?).await;
-                        return Ok(());
-                    }
-                };
-                transformer.comp_raw += &re.replace_all(&chunk_str, "");
-                let old_raw = mem::take(&mut transformer.comp_raw);
-                let mut substr = old_raw.split("\n\n").collect::<Vec<_>>();
-                let last_msg = substr.pop().map(|s| s.to_string());
-                transformer.comp_raw = last_msg.unwrap_or_default();
-
-                for i in substr {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(i) {
-                        if let Some(error) = parsed.get("error") {
-                            let err_msg = format!(
-                                "## {}\n**{} error**:\n{}\n\n```\n{}\n```\n\nFAQ: https://rentry.org/teralomaniac_clewd",
-                                transformer.config.version,
-                                transformer.config.model,
-                                error
-                                    .get("status")
-                                    .and_then(|s| s.as_str())
-                                    .unwrap_or("unknown"),
-                                error
-                                    .get("message")
-                                    .and_then(|s| s.as_str())
-                                    .unwrap_or("unknown")
-                            );
-                            transformer.error = Some(err_msg.clone());
-                            transformer.ended = true;
-                            y.yield_ok(transformer.build(err_msg)?).await;
-                            return Ok(());
-                        }
-
-                        if transformer.comp_model.is_empty() {
-                            if let Some(model) = parsed.get("model").and_then(|m| m.as_str()) {
-                                transformer.comp_model = model.to_string();
-                            }
-                        }
-
-                        if let Some(content) = parsed
-                            .get("completion")
-                            .or(parsed.get("delta").and_then(|d| d.get("text")))
-                            .or(parsed
-                                .get("choices")
-                                .and_then(|c| c.get(0))
-                                .and_then(|c| c.get("delta"))
-                                .and_then(|d| d.get("content")))
-                            .and_then(|c| c.as_str())
-                        {
-                            let content = content.to_string();
-                            transformer.comp_ok += &content;
-                            transformer.comp_all.push(content);
-
-                            if transformer.config.streaming {
-                                while transformer.comp_ok.len() >= transformer.config.min_size {
-                                    let selection = transformer.collect_buf();
-                                    y.yield_ok(transformer.build(selection)?).await;
-                                }
-                            }
-                        }
-                    }
+                if let Err(e) = transformer.transform(chunk, &mut y).await {
+                    transformer.err(e, &mut y).await;
+                    return Ok(());
                 }
             }
-
-            // Flush logic
-            if !transformer.comp_raw.is_empty() {
-                transformer.comp_ok += &transformer.comp_raw;
-                transformer.comp_raw.clear();
+            if let Err(e) = transformer.flush(&mut y).await {
+                transformer.err(e, &mut y).await;
             }
-
-            if transformer.config.streaming {
-                if !transformer.comp_ok.is_empty() {
-                    y.yield_ok(transformer.build(transformer.comp_ok.clone())?)
-                        .await;
-                    transformer.comp_ok.clear();
-                }
-                if !transformer.ended && !transformer.config.cancel.is_cancelled() {
-                    y.yield_ok("data: [DONE]\n\n".to_string()).await;
-                }
-            } else {
-                let full_content = transformer.comp_all.join("");
-                if full_content.is_empty() && !transformer.ended {
-                    let err = format!(
-                        "## {}\n**error**:\n\n```\nReceived no valid replies at all\n```\n\nFAQ: https://rentry.org/teralomaniac_clewd",
-                        transformer.config.version
-                    );
-                    transformer.error = Some(err.clone());
-                    y.yield_ok(transformer.build(err)?).await;
-                } else {
-                    if full_content.contains("I apologize, but I will not provide") {
-                        transformer.hard_censor = true;
-                    }
-                    y.yield_ok(transformer.build(full_content)?).await;
-                }
-            }
-
             Ok(())
         })
     }
@@ -216,12 +289,13 @@ mod test {
     #[tokio::test]
     async fn stream_test() {
         let cancel = CancellationToken::new();
-        let config = ClewdConfig {
+        let config = ClewdrConfig {
             version: "1.0".to_string(),
             model: "some-model".to_string(),
             streaming: true,
             min_size: 8,
             cancel,
+            prevent_imperson: false,
         };
 
         let input = tokio_stream::iter(vec![
@@ -229,7 +303,7 @@ mod test {
             Ok(Bytes::from("{\"completion\": \" world\"}\n\n")),
         ]);
 
-        let transformer = ClewdTransformer::new(config);
+        let transformer = ClewdrTransformer::new(config);
         let stream = transformer.transform_stream(input);
         pin_mut!(stream);
 

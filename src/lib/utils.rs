@@ -3,8 +3,77 @@ use chrono::format;
 use figlet_rs::FIGfont;
 use rquest::Response;
 use serde_json::{Number, Value, json};
-use std::sync::LazyLock;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+};
 use tracing::error;
+
+const R: [(&str, &str); 5] = [
+    ("user", "Human"),
+    ("assistant", "Assistant"),
+    ("system", ""),
+    ("example_user", "H"),
+    ("example_assistant", "A"),
+];
+
+static REPLACEMENT: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| HashMap::from(R));
+pub static DANGER_CHARS: LazyLock<Vec<char>> = LazyLock::new(|| {
+    REPLACEMENT
+        .iter()
+        .map(|(_, v)| v.chars())
+        .flatten()
+        .chain(['\n', ':', '\\'])
+        .collect()
+});
+
+pub fn index_of_any(text: &str, last: Option<bool>) -> i32 {
+    let mut indices = vec![index_of_h(text, last), index_of_a(text, last)]
+        .into_iter()
+        .filter(|&idx| idx > -1)
+        .collect::<Vec<i32>>();
+    let last = last.unwrap_or(false);
+    if indices.is_empty() {
+        -1
+    } else if last {
+        *indices.iter().max().unwrap() // Last in sorted order is max
+    } else {
+        *indices.iter().min().unwrap() // First in sorted order is min
+    }
+}
+
+fn index_of_h(text: &str, last: Option<bool>) -> i32 {
+    let last = last.unwrap_or(false);
+    let re = regex::Regex::new(r"(?:(?:\\n)|\r|\n){2}((?:Human|H)[:︓：﹕] ?)").unwrap();
+    let matches: Vec<_> = re.find_iter(text).collect();
+
+    if matches.is_empty() {
+        -1
+    } else if last {
+        matches.last().unwrap().start() as i32
+    } else {
+        matches.first().unwrap().start() as i32
+    }
+}
+
+fn index_of_a(text: &str, last: Option<bool>) -> i32 {
+    let last = last.unwrap_or(false);
+    let re = regex::Regex::new(r"(?:(?:\\n)|\r|\n){2}((?:Assistant|A)[:︓：﹕] ?)").unwrap();
+    let matches: Vec<_> = re.find_iter(text).collect();
+
+    if matches.is_empty() {
+        -1
+    } else if last {
+        matches.last().unwrap().start() as i32
+    } else {
+        matches.first().unwrap().start() as i32
+    }
+}
+
+pub fn generic_fixes(text: &str) -> String {
+    let re = regex::Regex::new(r"(\r\n|\r|\\n)").unwrap();
+    re.replace_all(text, "\n").to_string()
+}
 
 pub fn print_out_json(json: &Value) {
     let string = serde_json::to_string_pretty(json).unwrap_or_default();
@@ -93,6 +162,8 @@ pub enum ClewdrError {
     Regex(#[from] regex::Error),
     #[error("Rquest error: {0}")]
     Rquest(#[from] rquest::Error),
+    #[error("UTF8 error: {0}")]
+    UTF8(#[from] std::string::FromUtf8Error),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";
