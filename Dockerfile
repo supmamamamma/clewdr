@@ -1,42 +1,64 @@
-# 构建阶段
-FROM rust:latest AS builder
+# 基础镜像
+FROM debian:bookworm-slim as builder
 
-# 安装系统依赖
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    git build-essential cmake perl pkg-config libclang-dev musl-tools g++ && \
-    rm -rf /var/lib/apt/lists/*
+# 安装 Rust 工具链和构建依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    cmake \
+    perl \
+    pkg-config \
+    libclang-dev \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
 
-# 设置工作目录
-WORKDIR /usr/src/clewdr
+# 安装 Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# 复制 Cargo.toml 和 Cargo.lock
-COPY Cargo.toml Cargo.lock ./
-# 复制源代码
+WORKDIR /usr/src/app
+
+# 创建一个新的空项目
+RUN USER=root cargo new --bin clewdr
+WORKDIR /usr/src/app/clewdr
+
+# 复制 Cargo 配置文件
+COPY Cargo.toml Cargo.lock* ./
+
+# 创建必要的目录结构
+RUN mkdir -p src/lib
+
+# 创建一个虚拟的 lib.rs 和 main.rs 以缓存依赖项
+RUN echo "// dummy file" > src/lib/lib.rs
+RUN echo "fn main() {println!(\"Hello, world!\");}" > src/main.rs
+
+# 构建依赖项
+RUN cargo build --release
+
+# 删除虚拟源文件
+RUN rm -f src/lib/lib.rs src/main.rs
+
+# 复制实际源代码
 COPY src ./src
 
-#  移除 cargo init/new
-#  直接构建
+# 重新构建应用程序
+RUN touch src/lib/lib.rs src/main.rs
+RUN cargo build --release
 
-# 构建项目.  添加 musl target
-RUN rustup target add x86_64-unknown-linux-musl
-# 设置 CXX 环境变量为 musl-g++ (如果存在); 否则, 使用 g++ (假设已安装)
-ENV CXX=/usr/bin/musl-g++
-RUN if [ -f /usr/bin/musl-g++ ]; then \
-        echo "Using musl-g++"; \
-    else \
-        echo "Using g++"; \
-        export CXX=/usr/bin/g++; \
-    fi && \
-    cargo build --release --target=x86_64-unknown-linux-musl
+# 最终镜像
+FROM debian:bookworm-slim
 
-# 运行阶段
-FROM scratch
+# 安装运行时依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# 从构建阶段复制可执行文件
-COPY --from=builder /usr/src/clewdr/target/x86_64-unknown-linux-musl/release/clewdr /
+WORKDIR /usr/local/bin
 
-#  因为FROM scratch，根目录就是工作目录，不需要设置WORKDIR
+# 从构建器阶段复制二进制文件
+COPY --from=builder /usr/src/app/clewdr/target/release/clewdr .
 
-# 运行程序（根据你的程序需求调整）
-CMD ["/clewdr"]
+# 设置容器启动命令
+CMD ["clewdr"]
