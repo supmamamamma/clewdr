@@ -9,12 +9,14 @@ RUN apt-get update && \
 
 # 创建一个新项目
 WORKDIR /usr/src/clewdr
-RUN cargo new --bin .
 
 # 复制 Cargo.toml 和 Cargo.lock
 COPY Cargo.toml Cargo.lock ./
 # 复制源代码
 COPY src ./src
+
+# 初始化项目.  使用 init 而不是 new
+RUN cargo init --bin
 
 # 构建项目.  添加 musl target
 RUN rustup target add x86_64-unknown-linux-musl
