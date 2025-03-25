@@ -1,5 +1,5 @@
 # 1. 基础构建阶段，使用 Rust 官方镜像
-FROM rust:1.76 as builder
+FROM rustlang/rust:nightly as builder
 
 # 2. 设置工作目录
 WORKDIR /app
