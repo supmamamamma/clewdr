@@ -7,7 +7,7 @@ RUN apt-get update && \
     git build-essential cmake perl pkg-config libclang-dev musl-tools && \
     rm -rf /var/lib/apt/lists/*
 
-# 创建一个新项目
+# 设置工作目录
 WORKDIR /usr/src/clewdr
 
 # 复制 Cargo.toml 和 Cargo.lock
@@ -15,8 +15,8 @@ COPY Cargo.toml Cargo.lock ./
 # 复制源代码
 COPY src ./src
 
-# 初始化项目.  使用 init 而不是 new
-RUN cargo init --bin
+#  移除 cargo init/new
+#  直接构建
 
 # 构建项目.  添加 musl target
 RUN rustup target add x86_64-unknown-linux-musl
@@ -26,10 +26,9 @@ RUN cargo build --release --target=x86_64-unknown-linux-musl
 FROM scratch
 
 # 从构建阶段复制可执行文件
-COPY --from=builder /usr/src/clewdr/target/x86_64-unknown-linux-musl/release/clewdr /usr/local/bin/clewdr
+COPY --from=builder /usr/src/clewdr/target/x86_64-unknown-linux-musl/release/clewdr /
 
-# 设置工作目录.  因为FROM scratch，根目录就是工作目录
-WORKDIR /
+#  因为FROM scratch，根目录就是工作目录，不需要设置WORKDIR
 
 # 运行程序（根据你的程序需求调整）
-CMD ["/usr/local/bin/clewdr"]
+CMD ["/clewdr"]
