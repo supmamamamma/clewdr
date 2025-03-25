@@ -4,7 +4,7 @@ FROM rust:latest AS builder
 # 安装系统依赖
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    git build-essential cmake perl pkg-config libclang-dev musl-tools && \
+    git build-essential cmake perl pkg-config libclang-dev musl-tools g++ && \
     rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
@@ -20,7 +20,15 @@ COPY src ./src
 
 # 构建项目.  添加 musl target
 RUN rustup target add x86_64-unknown-linux-musl
-RUN cargo build --release --target=x86_64-unknown-linux-musl
+# 设置 CXX 环境变量为 musl-g++ (如果存在); 否则, 使用 g++ (假设已安装)
+ENV CXX=/usr/bin/musl-g++
+RUN if [ -f /usr/bin/musl-g++ ]; then \
+        echo "Using musl-g++"; \
+    else \
+        echo "Using g++"; \
+        export CXX=/usr/bin/g++; \
+    fi && \
+    cargo build --release --target=x86_64-unknown-linux-musl
 
 # 运行阶段
 FROM scratch
