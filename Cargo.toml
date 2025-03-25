@@ -10,12 +10,12 @@ path = "src/lib/lib.rs"
 [dependencies]
 claude-tokenizer = "0.3"
 tokio = { version = "1", features = ["full"] }
-rquest = { version = "5", features = ["json"] }
+rquest = { version = "5", features = ["json", "stream"] }
 rquest-util = "2"
 serde_json = "1"
 const_format = { version = "0.2", features = ["fmt"] }
 figlet-rs = "0.1"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
 colored = "3"
@@ -23,11 +23,12 @@ axum = { version = "0.8", features = ["json"] }
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-rand = "0.9.0"
-chrono = "0.4.40"
-parking_lot = { version = "0.12.3", features = ["send_guard"] }
+rand = "0.9"
+chrono = "0.4"
+parking_lot = { version = "0.12", features = ["send_guard"] }
 futures = "0.3"
-thiserror = "2.0.12"
-tokio-stream = "0.1.17"
-transform-stream = "0.3.1"
-
+thiserror = "2"
+tokio-util = "0.7"
+tokio-stream = "0.1"
+transform-stream = "0.3"
+bytes = "1"

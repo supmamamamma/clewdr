@@ -87,6 +87,10 @@ pub const MODELS: [&str; 10] = [
 pub enum ClewdrError {
     #[error("Invalid authorization")]
     InvalidAuth,
+    #[error("Json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Regex error: {0}")]
+    Regex(#[from] regex::Error),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";

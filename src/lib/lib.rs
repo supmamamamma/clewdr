@@ -7,7 +7,6 @@ pub mod api;
 pub mod completion;
 pub mod config;
 pub mod stream;
-pub mod superfetch;
 pub mod utils;
 
 pub static NORMAL_CLIENT: LazyLock<Client> = LazyLock::new(|| {
