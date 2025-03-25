@@ -29,3 +29,5 @@ parking_lot = { version = "0.12.3", features = ["send_guard"] }
 futures = "0.3"
 thiserror = "2.0.12"
 
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
