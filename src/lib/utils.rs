@@ -164,6 +164,10 @@ pub enum ClewdrError {
     Rquest(#[from] rquest::Error),
     #[error("UTF8 error: {0}")]
     UTF8(#[from] std::string::FromUtf8Error),
+    #[error("Stream cancelled")]
+    StreamCancelled,
+    #[error("Stream internal error")]
+    StreamInternalError,
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";
