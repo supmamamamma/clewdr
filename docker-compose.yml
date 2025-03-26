@@ -11,10 +11,10 @@ services:
       - ./config.toml:/usr/local/bin/config.toml
     restart: unless-stopped
     networks:
-      - allin
+      - sexyfsq
 
 networks: 
-  allin: 
+  sexyfsq: 
     driver: bridge
     ipam: 
       config: 
