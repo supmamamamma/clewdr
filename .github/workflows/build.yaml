@@ -1,76 +1,99 @@
 # .github/workflows/release.yml
 
-name: Build and Release Rust Binary (musl)
+name: Build and Release Rust Binary (musl with clang)
 
-# 触发条件：当一个 tag 被推送到仓库时触发
 on:
   push:
     tags:
-      - 'v*' # 匹配例如 v1.0, v2.1.3 等 tag
+      - 'v*'
 
-# 所需权限：需要写入内容的权限来创建 Release 和上传文件
 permissions:
   contents: write
 
 jobs:
   build_and_release:
-    # 运行环境：使用最新的 Ubuntu runner (因为需要 musl-tools)
     runs-on: ubuntu-latest
     steps:
-      # 第一步：检出代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 第二步：设置 Rust 工具链
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable # 使用稳定版 Rust
+          toolchain: stable
 
-      # 第三步：安装系统依赖项 (包括 musl-tools)
-      - name: Install System Dependencies
+      # 第一步：安装 Clang, LLD, musl-tools 和其他基础依赖
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential cmake perl pkg-config libclang-dev musl-tools g++ musl-dev
-          # 安装 musl target 以进行静态链接构建
+          # 安装 clang, lld, musl-tools。移除 g++, musl-dev。保留其他基础依赖。
+          sudo apt-get install -y clang lld musl-tools cmake perl pkg-config libclang-dev git build-essential
           rustup target add x86_64-unknown-linux-musl
 
-      # 可选：缓存 Cargo 依赖项以加快构建速度
+      # 第二步：缓存 Cargo 依赖项 (更新缓存键)
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          # key 中加入 target 信息，避免与默认 target 冲突
-          key: linux-musl-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          # 使用新的 key 以反映 clang 工具链
+          key: linux-musl-clang-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # 第四步：构建项目 (Release 模式, 使用 musl target)
+      # 第三步：配置 Cargo 使用 Clang 进行 musl 构建
+      - name: Configure Cargo for musl build with clang
+        run: |
+          mkdir -p .cargo
+          cat <<EOF > .cargo/config.toml
+          # 针对 x86_64-unknown-linux-musl target 的配置
+          [target.x86_64-unknown-linux-musl]
+          # 使用 clang 作为链接器
+          linker = "clang"
+          # 设置传递给链接器的 rustflags
+          rustflags = [
+              # 明确告诉 clang/lld 目标是 musl
+              "-C", "link-arg=--target=x86_64-unknown-linux-musl",
+              # 使用 lld 作为链接器后端
+              "-C", "link-arg=-fuse-ld=lld",
+              # 请求静态链接标准库
+              "-C", "link-arg=-static",
+              # 确保 CRT 是静态链接的 (对 musl target 通常是默认但明确指定无害)
+              "-C", "target-feature=+crt-static",
+          ]
+
+          # 通过 [env] 设置环境变量，供 build scripts (如 cc-rs, cmake-rs) 使用
+          [env]
+          # 指定 musl target 的 C 编译器为 clang，并传递 target 参数
+          CC_x86_64-unknown-linux-musl = "clang"
+          CFLAGS_x86_64-unknown-linux-musl = "--target=x86_64-unknown-linux-musl"
+
+          # 指定 musl target 的 C++ 编译器为 clang++，并传递 target 参数
+          CXX_x86_64-unknown-linux-musl = "clang++"
+          CXXFLAGS_x86_64-unknown-linux-musl = "--target=x86_64-unknown-linux-musl"
+
+          # 指定 musl target 的 Archiver 为 llvm-ar
+          AR_x86_64-unknown-linux-musl = "llvm-ar"
+
+          # 确保 Cargo 也知道链接器 (虽然上面 target.linker 已设置，冗余无害)
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "clang"
+          EOF
+          echo "Created .cargo/config.toml:"
+          cat .cargo/config.toml
+
+      # 第四步：构建项目
       - name: Build Project
-        env: 
-          CC_x86_64-unknown-linux-musl: musl-gcc
-          CXX_x86_64-unknown-linux-musl: g++
-          RUSTFLAGS: -C linker=musl-gcc -C link-arg=-static -C target-feature=+crt-static
-        # 使用 --target 进行 musl 静态链接构建
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        # 环境变量和 RUSTFLAGS 现在由 .cargo/config.toml 提供
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl --verbose
 
-      # 第五步：准备 Release 资源
+      # 第五步：准备 Release 资源 (保持不变)
       - name: Prepare Release Asset
         id: prepare_asset
         run: |
-          # 从 github.repository (格式: owner/repo) 中提取仓库名
           REPO_NAME=$(echo "${{ github.repository }}" | awk -F / '{print $2}')
-          # 获取触发工作流的 tag 名称
           TAG_NAME="${{ github.ref_name }}"
-
           TARGET_ARCH="x86_64"
-          # 更新 OS 标识符以反映是 musl 构建
           TARGET_OS="linux-musl"
-
-          # 二进制文件现在位于 musl target 的输出目录中
           SOURCE_BINARY_PATH_DIR="./target/x86_64-unknown-linux-musl/release"
 
-          # 查找 target/x86_64-unknown-linux-musl/release 目录下的可执行文件
           SOURCE_BINARY_PATH=$(find "$SOURCE_BINARY_PATH_DIR" -maxdepth 1 -type f -executable -not -name '*.*' | head -n 1)
 
-          # 如果找不到，尝试使用仓库名作为二进制文件名 (常见情况)
           if [ -z "$SOURCE_BINARY_PATH" ]; then
             FALLBACK_PATH="$SOURCE_BINARY_PATH_DIR/$REPO_NAME"
             if [ -f "$FALLBACK_PATH" ]; then
@@ -85,31 +108,22 @@ jobs:
             echo "Found binary: $SOURCE_BINARY_PATH"
           fi
 
-          # 资源文件名现在会包含 'linux-musl'
           ASSET_NAME="${REPO_NAME}-${TAG_NAME}-${TARGET_ARCH}-${TARGET_OS}"
-
-          # 创建一个临时目录用于存放重命名的资源
           mkdir ./staging
-          # 复制并重命名二进制文件
           cp "$SOURCE_BINARY_PATH" "./staging/${ASSET_NAME}"
 
-          # 设置输出变量，供后续步骤使用
           echo "asset_path=./staging/${ASSET_NAME}" >> $GITHUB_OUTPUT
           echo "asset_name=${ASSET_NAME}" >> $GITHUB_OUTPUT
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT # Release 的标题
-          # 可以自定义 Release 的描述信息，例如指向 CHANGELOG
-          echo "body=Automatic release for tag ${TAG_NAME}. See CHANGELOG.md for details. (Linux binary is statically linked using musl)" >> $GITHUB_OUTPUT # 可选：在描述中说明是 musl 构建
+          echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT
+          # 更新 body 以反映使用了 clang
+          echo "body=Automatic release for tag ${TAG_NAME}. See CHANGELOG.md for details. (Linux binary is statically linked using musl via clang)" >> $GITHUB_OUTPUT
 
-      # 第六步：创建 GitHub Release 并上传资源
+      # 第六步：创建 GitHub Release 并上传资源 (保持不变)
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v1
         with:
-          # 从上一步获取的输出变量
           tag_name: ${{ steps.prepare_asset.outputs.tag_name }}
           name: ${{ steps.prepare_asset.outputs.release_name }}
           body: ${{ steps.prepare_asset.outputs.body }}
-          # draft: false   # 设置为 true 可创建草稿 Release
-          # prerelease: false # 设置为 true 可标记为预发布 Release
-          # 指定要上传的文件，action 会使用这个文件的名称作为 Release 页面上的资源名
           files: ${{ steps.prepare_asset.outputs.asset_path }}
