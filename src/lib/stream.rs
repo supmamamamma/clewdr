@@ -7,7 +7,7 @@ use std::mem;
 use tokio::select;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 use transform_stream::{AsyncTryStream, Yielder};
 
 use crate::utils::{
@@ -94,9 +94,11 @@ impl ClewdrTransformer {
     }
 
     fn collect_buf(&mut self) -> String {
-        self.ready_string
-            .drain(..self.config.min_size.min(self.ready_string.len()))
-            .collect()
+        let mut upper = self.config.min_size.min(self.ready_string.len());
+        while !&self.ready_string.is_char_boundary(upper) {
+            upper += 1;
+        }
+        self.ready_string.drain(0..upper).collect()
     }
 
     async fn end_early(&self, y: &mut Yielder<Result<String, ClewdrError>>) {
@@ -296,7 +298,21 @@ impl ClewdrTransformer {
                 }
             }
             self.flush(&mut y).await;
-            Err(ClewdrError::StreamEndNormal(self))
+            info!(
+                "Stream finished. Input length: {}, Output length: {}",
+                self.recv_length,
+                self.completes.len()
+            );
+            if self.hard_censor {
+                return Err(ClewdrError::HardCensor(self));
+            }
+            if *self.impersonated.read() {
+                return Err(ClewdrError::Impersonation(self));
+            }
+            if self.completes.is_empty() || self.recv_length == 0 {
+                return Err(ClewdrError::EmptyStream(self));
+            }
+            Ok(())
         })
     }
 }

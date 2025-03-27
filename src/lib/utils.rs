@@ -221,6 +221,14 @@ pub enum ClewdrError {
     IoError(#[from] std::io::Error),
     #[error("Invalid model name: {0}")]
     InvalidModel(String),
+    #[error("HardCensor detected")]
+    HardCensor(ClewdrTransformer),
+    #[error("Impersonation detected")]
+    Impersonation(ClewdrTransformer),
+    #[error("Empty stream")]
+    EmptyStream(ClewdrTransformer),
+    #[error("Unknown Stream error: {1}")]
+    UnknownStreamError(ClewdrTransformer, String),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";
