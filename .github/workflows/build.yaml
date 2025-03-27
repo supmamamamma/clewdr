@@ -1,6 +1,6 @@
 # .github/workflows/release.yml
 
-name: Build and Release Rust Binary
+name: Build and Release Rust Binary (musl)
 
 # 触发条件：当一个 tag 被推送到仓库时触发
 on:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build_and_release:
-    # 运行环境：使用最新的 Ubuntu runner
+    # 运行环境：使用最新的 Ubuntu runner (因为需要 musl-tools)
     runs-on: ubuntu-latest
     steps:
       # 第一步：检出代码
@@ -27,32 +27,27 @@ jobs:
         with:
           toolchain: stable # 使用稳定版 Rust
 
-      # 第三步：安装系统依赖项
+      # 第三步：安装系统依赖项 (包括 musl-tools)
       - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y git build-essential cmake perl pkg-config libclang-dev musl-tools
-          # 使用 musl-tools 可能意味着你想进行 musl 静态链接构建
-          # 如果是这样，你可能还需要安装 musl target:
-          # rustup target add x86_64-unknown-linux-musl
+          # 安装 musl target 以进行静态链接构建
+          rustup target add x86_64-unknown-linux-musl
 
       # 可选：缓存 Cargo 依赖项以加快构建速度
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          # key 中加入 target 信息，避免与默认 target 冲突
+          key: linux-musl-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # 第四步：构建项目 (Release 模式)
-      # 使用 --locked 确保使用 Cargo.lock 中锁定的依赖版本
+      # 第四步：构建项目 (Release 模式, 使用 musl target)
       - name: Build Project
-        run: cargo build --release --locked
-        # 如果你需要 musl 静态链接构建，请注释掉上面一行，并取消下面一行的注释
-        # run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        # 使用 --target 进行 musl 静态链接构建
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       # 第五步：准备 Release 资源
-      # - 获取仓库名、tag名
-      # - 确定目标架构和系统 (基于 runner)
-      # - 确定二进制文件路径
-      # - 构造最终的资源文件名
-      # - 将二进制文件复制并重命名为最终的资源文件名
       - name: Prepare Release Asset
         id: prepare_asset
         run: |
@@ -61,19 +56,14 @@ jobs:
           # 获取触发工作流的 tag 名称
           TAG_NAME="${{ github.ref_name }}"
 
-          # 确定目标架构和系统
-          # 你可以根据需要修改或使用 matrix strategy 来支持多平台
           TARGET_ARCH="x86_64"
-          TARGET_OS="linux"
-          # 如果你需要 musl 静态链接构建，请取消下面一行的注释，并注释掉上面一行
-          # TARGET_OS="linux-musl"
+          # 更新 OS 标识符以反映是 musl 构建
+          TARGET_OS="linux-musl"
 
-          # 查找 target/release 目录下的可执行文件
-          # 尝试查找不含 '.' 的文件以避免匹配到调试文件或依赖项，然后选择第一个找到的
-          SOURCE_BINARY_PATH_DIR="./target/release"
-          # 如果你需要 musl 静态链接构建，请注释掉上面一行，并取消下面一行的注释
-          # SOURCE_BINARY_PATH_DIR="./target/x86_64-unknown-linux-musl/release"
+          # 二进制文件现在位于 musl target 的输出目录中
+          SOURCE_BINARY_PATH_DIR="./target/x86_64-unknown-linux-musl/release"
 
+          # 查找 target/x86_64-unknown-linux-musl/release 目录下的可执行文件
           SOURCE_BINARY_PATH=$(find "$SOURCE_BINARY_PATH_DIR" -maxdepth 1 -type f -executable -not -name '*.*' | head -n 1)
 
           # 如果找不到，尝试使用仓库名作为二进制文件名 (常见情况)
@@ -91,7 +81,7 @@ jobs:
             echo "Found binary: $SOURCE_BINARY_PATH"
           fi
 
-          # 构造最终的资源文件名
+          # 资源文件名现在会包含 'linux-musl'
           ASSET_NAME="${REPO_NAME}-${TAG_NAME}-${TARGET_ARCH}-${TARGET_OS}"
 
           # 创建一个临时目录用于存放重命名的资源
@@ -105,10 +95,9 @@ jobs:
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT # Release 的标题
           # 可以自定义 Release 的描述信息，例如指向 CHANGELOG
-          echo "body=Automatic release for tag ${TAG_NAME}. See CHANGELOG.md for details." >> $GITHUB_OUTPUT
+          echo "body=Automatic release for tag ${TAG_NAME}. See CHANGELOG.md for details. (Linux binary is statically linked using musl)" >> $GITHUB_OUTPUT # 可选：在描述中说明是 musl 构建
 
       # 第六步：创建 GitHub Release 并上传资源
-      # 使用 softprops/action-gh-release action 来完成此操作
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v1
         with:
