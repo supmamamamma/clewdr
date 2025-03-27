@@ -31,7 +31,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential cmake perl pkg-config libclang-dev musl-tools g++
+          sudo apt-get install -y git build-essential cmake perl pkg-config libclang-dev musl-tools g++ musl-dev
           # 安装 musl target 以进行静态链接构建
           rustup target add x86_64-unknown-linux-musl
 
