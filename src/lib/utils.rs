@@ -14,14 +14,20 @@ const R: [(&str, &str); 5] = [
     ("example_assistant", "A"),
 ];
 
+pub const TIME_ZONE: &str = "America/New_York";
+
 pub static REPLACEMENT: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| HashMap::from(R));
 pub static DANGER_CHARS: LazyLock<Vec<char>> = LazyLock::new(|| {
-    REPLACEMENT
+    let mut r: Vec<char> = REPLACEMENT
         .iter()
         .map(|(_, v)| v.chars())
         .flatten()
         .chain(['\n', ':', '\\', 'n'])
-        .collect()
+        .filter(|&c| c != ' ')
+        .collect();
+    r.sort();
+    r.dedup();
+    r
 });
 
 pub fn clean_json(json: &str) -> &str {
@@ -234,10 +240,7 @@ pub fn header_ref(ref_path: &str) -> String {
     }
 }
 
-pub async fn check_res_err(
-    res: Response,
-    ret_json: &mut Option<Value>,
-) -> Result<Value, ClewdrError> {
+pub async fn check_res_err(res: Response) -> Result<Response, ClewdrError> {
     let mut ret = JsError {
         name: "Error".to_string(),
         message: None,
@@ -246,18 +249,15 @@ pub async fn check_res_err(
         r#type: None,
     };
     let status = res.status();
-    let json: Value = res.json().await.inspect_err(|e| {
-        error!("Failed to parse response: {}\n", e);
-    })?;
-    if !json.is_null() {
-        *ret_json = Some(json.clone());
-    }
     if !status.is_success() {
         ret.message = Some(format!("Unexpected response code: {}", status).into());
         error!("Unexpected response code: {}", status);
     } else {
-        return Ok(json!({}));
+        return Ok(res);
     }
+    let json: Value = res.json().await.inspect_err(|e| {
+        error!("Failed to parse response: {}\n", e);
+    })?;
     let Some(err_api) = json.get("error") else {
         return Err(ClewdrError::JsError(ret));
     };

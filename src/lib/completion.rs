@@ -2,7 +2,7 @@ use crate::{
     SUPER_CLIENT, TITLE,
     api::{AppState, InnerState},
     stream::{ClewdrConfig, ClewdrTransformer},
-    utils::{ClewdrError, ENDPOINT, TEST_MESSAGE, check_res_err, header_ref},
+    utils::{ClewdrError, ENDPOINT, TEST_MESSAGE, TIME_ZONE, check_res_err, header_ref},
 };
 use axum::{
     Json,
@@ -13,7 +13,7 @@ use axum::{
 use bytes::Bytes;
 use futures::pin_mut;
 use regex::{Regex, RegexBuilder};
-use rquest::header::{COOKIE, ORIGIN, REFERER};
+use rquest::header::{ACCEPT, COOKIE, ORIGIN, REFERER};
 use serde::{de, ser};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -76,7 +76,7 @@ pub struct ClientRequestInfo {
     #[serde(default)]
     max_tokens: Option<i64>,
     #[serde(default)]
-    stop: Vec<String>,
+    stop: Option<Vec<String>>,
     #[serde(default)]
     top_p: Option<f64>,
     #[serde(default)]
@@ -125,6 +125,7 @@ pub struct PromptsGroup {
     pub last_assistant: Option<Message>,
 }
 
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum RetryStrategy {
     Api,
     Renew,
@@ -186,7 +187,7 @@ pub async fn completion(
 }
 
 impl AppState {
-    async fn try_completion(&self, payload: ClientRequestInfo) -> Result<Body, ClewdrError> {
+    async fn try_completion(&self, mut payload: ClientRequestInfo) -> Result<Body, ClewdrError> {
         // TODO: 3rd key, API key, auth token, etc.
         let s = self.0.as_ref();
         let p = payload.sanitize_client_request();
@@ -293,7 +294,7 @@ impl AppState {
             "uuid": s.conv_uuid.read().as_ref().unwrap(),
             "name":""
         });
-        let res = SUPER_CLIENT
+        let api_res = SUPER_CLIENT
             .post(endpoint)
             .json(&body)
             .header_append(ORIGIN, ENDPOINT)
@@ -301,8 +302,8 @@ impl AppState {
             .header_append(COOKIE, self.header_cookie())
             .send()
             .await?;
-        self.update_cookie_from_res(&res);
-        check_res_err(res, &mut None).await?;
+        self.update_cookie_from_res(&api_res);
+        check_res_err(api_res).await?;
         r#type = RetryStrategy::Renew;
         // TODO: generate prompts
         let (prompt, systems) = self.handle_messages(&p.messages, r#type);
@@ -335,6 +336,117 @@ impl AppState {
             let re = Regex::new(r"<\|stopSet *(\[.*?\]) *\|>").unwrap();
             re.find_iter(&prompt).nth(1)
         };
-        unimplemented!()
+        let stop_revoke = {
+            let re = Regex::new(r"<\|stopRevoke *(\[.*?\]) *\|>").unwrap();
+            re.find_iter(&prompt).nth(1)
+        };
+        let stop_set: Vec<String> = stop_set
+            .and_then(|s| serde_json::from_str(s.as_str()).ok())
+            .unwrap_or_default();
+        let stop_revoke: Vec<String> = stop_revoke
+            .and_then(|s| serde_json::from_str(s.as_str()).ok())
+            .unwrap_or_default();
+        let stop = stop_set
+            .into_iter()
+            .chain(p.stop.unwrap_or_default().into_iter())
+            .chain(["\n\nHuman:".into(), "\n\nAssistant:".into()])
+            .filter(|s| {
+                let s = s.trim();
+                !s.is_empty() && !stop_revoke.iter().any(|r| r.eq_ignore_ascii_case(s))
+            })
+            .collect::<Vec<_>>();
+        // TODO: Api key
+        let prompt = if s.config.read().settings.xml_plot {
+            self.xml_plot(
+                prompt,
+                Some(
+                    legacy
+                        && !s
+                            .model
+                            .read()
+                            .as_ref()
+                            .map(|m| m.contains("claude-2.1"))
+                            .unwrap_or_default(),
+                ),
+            )
+        } else {
+            // TODO: handle api key
+            unimplemented!()
+        };
+        let mut pr = self.pad_txt(prompt);
+        // TODO: 我 log 你的吗，log 都写那么难看
+
+        // finally, send the request
+        // TODO: handle retry regeneration
+        let mut attach = json!([]);
+        if s.config.read().settings.prompt_experiments {
+            let splitted = pr
+                .split("\n\nPlainPrompt:")
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            let new_p = splitted[0].to_string();
+            attach = json!([{
+                "extracted_content": new_p,
+                "file_name": "paste.txt",
+                "file_type": "txt",
+                "file_size": new_p.as_bytes().len(),
+            }]);
+            pr = if r#type == RetryStrategy::Renew {
+                s.config.read().prompt_experiment_first.clone()
+            } else {
+                s.config.read().prompt_experiment_next.clone()
+            };
+            if splitted.len() > 1 {
+                pr += splitted[1].as_str();
+            }
+        }
+
+        let body = json!({
+            "attachments": attach,
+            "files": [],
+            "model": s.is_pro.read().as_ref(),
+            "rendering_mode": "raw",
+            // TODO: pass parameters
+            "prompt": pr,
+            "timezone": TIME_ZONE,
+        });
+        let endpoint = if s.config.read().api_rproxy.is_empty() {
+            ENDPOINT.to_string()
+        } else {
+            s.config.read().api_rproxy.clone()
+        };
+        let endpoint = format!(
+            "{}/api/organizations/{}/chat_conversations/{}/completion",
+            endpoint,
+            s.uuid_org.read(),
+            s.conv_uuid.read().as_ref().cloned().unwrap_or_default()
+        );
+
+        let api_res = SUPER_CLIENT
+            .post(endpoint)
+            .json(&body)
+            .header_append(ORIGIN, ENDPOINT)
+            .header_append(REFERER, header_ref(""))
+            .header_append(ACCEPT, "text/event-stream")
+            .header_append(COOKIE, self.header_cookie())
+            .send()
+            .await?;
+        self.update_cookie_from_res(&api_res);
+        let api_res = check_res_err(api_res).await?;
+        let status = api_res.status();
+        let trans = ClewdrTransformer::new(ClewdrConfig::new(
+            TITLE,
+            s.model
+                .read()
+                .as_ref()
+                .cloned()
+                .unwrap_or_default()
+                .as_str(),
+            p.stream,
+            s.config.read().buffer_size as usize,
+            s.config.read().settings.prevent_imperson,
+        ));
+        let stream = api_res.bytes_stream();
+        Ok(Body::from_stream(trans.transform_stream(stream)))
     }
 }

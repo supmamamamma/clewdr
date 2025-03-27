@@ -68,6 +68,7 @@ pub struct InnerState {
     pub conv_depth: RwLock<i64>,
     pub prev_messages: RwLock<Vec<Message>>,
     pub prev_impersonated: RwLock<bool>,
+    pub regex_log: RwLock<String>,
 }
 
 #[derive(Clone)]
@@ -227,9 +228,8 @@ impl AppState {
             .header_append("Cookie", self.header_cookie())
             .send()
             .await?;
-        let mut bootstrap: Option<Value> = None;
-        check_res_err(res, &mut bootstrap).await?;
-        let bootstrap = bootstrap.ok_or(ClewdrError::UnexpectedNone)?;
+        let res = check_res_err(res).await?;
+        let bootstrap = res.json::<Value>().await?;
         if bootstrap["account"].is_null() {
             println!("{}", "Null Error, Useless Cookie".red());
             return Ok(self.cookie_cleaner(UselessReason::Null));
@@ -388,9 +388,8 @@ impl AppState {
             .send()
             .await?;
         self.update_cookie_from_res(&res);
-        let mut ret_json: Option<Value> = None;
-        check_res_err(res, &mut ret_json).await?;
-        let ret_json = ret_json.ok_or(ClewdrError::UnexpectedNone)?;
+        let res = check_res_err(res).await?;
+        let ret_json = res.json::<Value>().await?;
         // print bootstrap to out.json, if it exists, overwrite it
         let acc_info = ret_json
             .as_array()
@@ -545,7 +544,7 @@ impl AppState {
                 .await?;
 
             self.update_cookie_from_res(&res);
-            check_res_err(res, &mut None).await?;
+            check_res_err(res).await?;
         }
         *self.0.changing.write() = false;
         let endpoint = self.0.config.read().endpoint();
