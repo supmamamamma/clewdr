@@ -284,7 +284,7 @@ impl AppState {
         // TODO: handle api key
         //TODO: handle retry regeneration and not same prompts
         let uuid = s.conv_uuid.read().clone();
-        if let Some(uuid) = uuid{
+        if let Some(uuid) = uuid {
             self.delete_chat(uuid).await?;
         }
         debug!("Chat deleted");
@@ -436,6 +436,7 @@ impl AppState {
                 .map(|mt| body["max_tokens_to_sample"] = json!(mt));
             p.top_k.map(|tk| body["top_k"] = json!(tk));
             p.top_p.map(|tp| body["top_p"] = json!(tp));
+            // body["stop_sequences"] = json!(stop);
             // body["temperature"] = json!(p.temperature);
         }
         print_out_json(&body, "log/4.req.json");

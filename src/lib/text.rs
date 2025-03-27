@@ -1,7 +1,8 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::LazyLock};
 
 use claude_tokenizer::count_tokens;
 use colored::Colorize;
+use fancy_regex::Regex;
 use rand::{Rng, RngCore};
 use serde_json::Value;
 use tracing::{error, warn};
@@ -213,13 +214,15 @@ impl AppState {
         };
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
         let mut split_content = {
-            let re = fancy_regex::Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap();
-            re.split(&content)
+            static RE: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap());
+            RE.split(&content)
                 .map_while(|s| s.map(|s| s.to_string()).ok())
                 .collect::<Vec<_>>()
         };
-        let re = fancy_regex::Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap();
-        while let Some(caps) = re.captures(&content).ok().and_then(|o| o) {
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
+        while let Some(caps) = RE.captures(&content).ok().and_then(|o| o) {
             let index = split_content.len() as isize - caps[1].parse::<isize>().unwrap() - 1;
             if index < 0 {
                 warn!("{}", "Invalid index".yellow());
@@ -230,8 +233,9 @@ impl AppState {
             }
         }
         let content = split_content.join("\n\n");
-        let re = fancy_regex::Regex::new(r"(?s)<@(\d+)>.*?</@\1>").unwrap();
-        let content = re.replace_all(&content, "").to_string();
+        static RE_: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
+        let content = RE_.replace_all(&content, "").to_string();
         let content = self.xml_plot_regex(content, 2);
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
         let split_human = content
@@ -254,21 +258,24 @@ impl AppState {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n\nHuman:");
-            let re = fancy_regex::Regex::new(r"\n\nHuman: *PlainPrompt:").unwrap();
+            static RE: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r"\n\nHuman: *PlainPrompt:").unwrap());
             content = split.clone()
                 + "\n\nPlainPrompt:"
-                + re.replace_all(split.as_str(), "\n\nPlainPrompt:")
+                + RE.replace_all(split.as_str(), "\n\nPlainPrompt:")
                     .to_string()
                     .as_str();
         }
         let c = self.xml_plot_regex(content, 3);
-        let re1 = fancy_regex::Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap();
-        let re2 = fancy_regex::Regex::new(r"(?m)\r\n|\r").unwrap();
-        let re3 = fancy_regex::Regex::new(r"\s*<\|curtail\|>\s*").unwrap();
-        let re4 = fancy_regex::Regex::new(r"\s*<\|join\|>\s*").unwrap();
-        let re5 = fancy_regex::Regex::new(r"\s*<\|space\|>\s*").unwrap();
-        let re6 = fancy_regex::Regex::new(r"\s*\n\n(H(uman)?|A(ssistant)?): +").unwrap();
-        let re7 = fancy_regex::Regex::new(r"<\|(\\.*?)\|>").unwrap();
+        static RE1: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap());
+        static RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)\r\n|\r").unwrap());
+        static RE3: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|curtail\|>\s*").unwrap());
+        static RE4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|join\|>\s*").unwrap());
+        static RE5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|space\|>\s*").unwrap());
+        static RE6: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\s*\n\n(H(uman)?|A(ssistant)?): +").unwrap());
+        static RE7: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<\|(\\.*?)\|>").unwrap());
         let replacer = |caps: &fancy_regex::Captures| {
             let re = regex::Regex::new(r##"\\?""##).unwrap();
             let Some(p1) = caps.get(1).map(|o| o.as_str()) else {
@@ -280,27 +287,29 @@ impl AppState {
             };
             return json.to_string();
         };
-        let content = re1.replace_all(c.as_str(), "").to_string();
-        let content = re2.replace_all(content.as_str(), "\n").to_string();
-        let content = re3.replace_all(content.as_str(), "\n").to_string();
-        let content = re4.replace_all(content.as_str(), "").to_string();
-        let content = re5.replace_all(content.as_str(), " ").to_string();
-        let content = re6.replace_all(content.as_str(), "\n\n$1: ").to_string();
-        let content = re7.replace_all(content.as_str(), replacer).to_string();
+        let content = RE1.replace_all(c.as_str(), "").to_string();
+        let content = RE2.replace_all(content.as_str(), "\n").to_string();
+        let content = RE3.replace_all(content.as_str(), "\n").to_string();
+        let content = RE4.replace_all(content.as_str(), "").to_string();
+        let content = RE5.replace_all(content.as_str(), " ").to_string();
+        let content = RE6.replace_all(content.as_str(), "\n\n$1: ").to_string();
+        let content = RE7.replace_all(content.as_str(), replacer).to_string();
         // TODO: api key logic
-        let re1 = fancy_regex::Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap();
-        let re2 = fancy_regex::Regex::new(r"\s*<\|.*?\|>\s*").unwrap();
-        let re3 = fancy_regex::Regex::new(r"^Human: *|\n\nAssistant: *$").unwrap();
-        let re4 = fancy_regex::Regex::new(r"(?<=\n)\n(?=\n)").unwrap();
+        static RE8: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap());
+        static RE9: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|.*?\|>\s*").unwrap());
+        static RE10: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^Human: *|\n\nAssistant: *$").unwrap());
+        static RE11: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?<=\n)\n(?=\n)").unwrap());
         let c = if !self.0.config.read().settings.padtxt.is_empty() {
-            re1.replace_all(content.as_str(), "\n\n").to_string()
+            RE8.replace_all(content.as_str(), "\n\n").to_string()
         } else {
-            re2.replace_all(content.as_str(), "\n\n").to_string()
+            RE9.replace_all(content.as_str(), "\n\n").to_string()
         }
         .trim()
         .to_string();
-        let c = re3.replace_all(c.as_str(), "").to_string();
-        re4.replace_all(c.as_str(), "").to_string()
+        let c = RE10.replace_all(c.as_str(), "").to_string();
+        RE11.replace_all(c.as_str(), "").to_string()
     }
 
     fn xml_plot_regex(&self, mut content: String, order: i64) -> String {
@@ -378,15 +387,18 @@ impl AppState {
         };
         let placeholder_tokens = count_tokens(placeholder.as_str()).unwrap_or_default();
         let re = fancy_regex::Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
-        while let [m1, m2, ..] = re
-            .find_iter(content.as_str())
-            .map_while(|m| m.ok().map(|m| m.as_str().to_string()))
-            .collect::<Vec<_>>()
-            .as_slice()
+        for cs in re
+            .captures_iter(content.clone().as_str())
+            .map_while(|c| c.ok().map(|c| c.iter().collect::<Vec<_>>()))
         {
+            let (Some(Some(m1)), Some(Some(m2))) = (cs.get(1), cs.get(2)) else {
+                continue;
+            };
+            let m1 = m1.as_str();
+            let m2 = m2.as_str();
             tokens += m1.parse::<usize>().unwrap_or_default();
             content = content.replace(
-                m1.as_str(),
+                m1,
                 &placeholder.repeat(m2.parse::<usize>().unwrap_or_default() / placeholder_tokens),
             );
         }
@@ -533,7 +545,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
         let re =
             fancy_regex::Regex::new(r"(?s)(?:\n\n|^\s*)Human:(.*?(?:\n\nAssistant:|$))").unwrap();
         let replacer = |caps: &fancy_regex::Captures| {
-            let re = regex::Regex::new(r"\n\nHuman:\s*").unwrap();
+            let re = fancy_regex::Regex::new(r"\n\nHuman:\s*").unwrap();
             if caps.len() < 2 {
                 return caps[0].to_string();
             }
@@ -548,7 +560,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
             .build()
             .unwrap();
         let replacer = |caps: &fancy_regex::Captures| {
-            let re = regex::Regex::new(r"\n\nAssistant:\s*").unwrap();
+            let re = fancy_regex::Regex::new(r"\n\nAssistant:\s*").unwrap();
             if caps.len() < 2 {
                 return caps[0].to_string();
             }
