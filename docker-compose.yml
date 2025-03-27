@@ -1,0 +1,21 @@
+version: "3"
+
+services: 
+
+  clewdr: 
+    container_name: clewdr
+    image: ghcr.io/supmamamamma/clewdr:latest
+    ports: 
+      - "127.0.0.1:11451:8484"
+    volumes: 
+      - ./config.toml:/usr/local/bin/config.toml
+    restart: unless-stopped
+    networks:
+      - sexyfsq
+
+networks: 
+  sexyfsq: 
+    driver: bridge
+    ipam: 
+      config: 
+        - subnet: 192.168.0.0/16
