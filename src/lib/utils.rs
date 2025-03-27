@@ -2,7 +2,7 @@ use figlet_rs::FIGfont;
 use rquest::Response;
 use serde_json::{Value, json};
 use std::{collections::HashMap, fmt::Display, sync::LazyLock};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::{completion::Message, stream::ClewdrTransformer};
 
@@ -100,15 +100,25 @@ pub fn generic_fixes(text: &str) -> String {
     re.replace_all(text, "\n").to_string()
 }
 
-pub fn print_out_json(json: &Value) {
+pub fn print_out_json(json: &impl serde::ser::Serialize, file_name: &str) {
     let string = serde_json::to_string_pretty(json).unwrap_or_default();
     let mut file = std::fs::File::options()
         .write(true)
         .create(true)
         .truncate(true)
-        .open("out.json")
+        .open(file_name)
         .unwrap();
     std::io::Write::write_all(&mut file, string.as_bytes()).unwrap();
+}
+
+pub fn print_out_text(text: &str, file_name: &str) {
+    let mut file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(file_name)
+        .unwrap();
+    std::io::Write::write_all(&mut file, text.as_bytes()).unwrap();
 }
 
 pub trait JsBool {
@@ -255,7 +265,10 @@ pub async fn check_res_err(res: Response) -> Result<Response, ClewdrError> {
     } else {
         return Ok(res);
     }
-    let json: Value = res.json().await.inspect_err(|e| {
+    let json = res.text().await.inspect_err(|e| {
+        error!("Failed to get response: {}\n", e);
+    })?;
+    let json = serde_json::from_str::<Value>(&json).inspect_err(|e| {
         error!("Failed to parse response: {}\n", e);
     })?;
     let Some(err_api) = json.get("error") else {
@@ -289,6 +302,7 @@ pub async fn check_res_err(res: Response) -> Result<Response, ClewdrError> {
                     *msg = new_msg.into();
                 }
             });
+            warn!("Rate limit exceeded, expires in {} hours", hours);
         }
     }
     Err(ClewdrError::JsError(ret))
@@ -300,7 +314,7 @@ pub fn check_json_err(json: &Value) -> Value {
         .get("status")
         .and_then(|s| s.as_u64())
         .map(|s| s as u16)
-        .unwrap_or(200);
+        .unwrap_or(500);
     let err_msg = err.and_then(|e| e.get("message")).and_then(|m| m.as_str());
     let mut ret = json!({
         "name": "Error",

@@ -9,7 +9,7 @@ use tracing::{error, warn};
 use crate::{
     api::AppState,
     completion::{Message, RetryStrategy},
-    utils::REPLACEMENT,
+    utils::{REPLACEMENT, print_out_text},
 };
 
 impl AppState {
@@ -371,9 +371,10 @@ impl AppState {
                 let mut vec = vec![0; rand_size];
                 rand::rng().fill_bytes(&mut vec);
                 // to hex
-                return vec.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                vec.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            } else {
+                h
             }
-            h
         };
         let placeholder_tokens = count_tokens(placeholder.as_str()).unwrap_or_default();
         let re = fancy_regex::Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
@@ -389,6 +390,7 @@ impl AppState {
                 &placeholder.repeat(m2.parse::<usize>().unwrap_or_default() / placeholder_tokens),
             );
         }
+        print_out_text(&content, "log/2.1.placeholder.txt");
         let re = fancy_regex::Regex::new(r"<\|padtxt off.*?\|>").unwrap();
         if re.is_match(content.as_str()).unwrap_or_default() {
             let re = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();

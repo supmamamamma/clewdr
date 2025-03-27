@@ -19,7 +19,7 @@ use crate::{
     NORMAL_CLIENT, SUPER_CLIENT,
     completion::{Message, completion, stream_example},
     config::{Config, UselessCookie, UselessReason},
-    utils::{ClewdrError, ENDPOINT, JsBool, MODELS, check_res_err, header_ref, print_out_json},
+    utils::{ClewdrError, ENDPOINT, JsBool, MODELS, check_res_err, header_ref},
 };
 
 impl RouterBuilder {

@@ -1,23 +1,20 @@
 use crate::{
     SUPER_CLIENT, TITLE,
-    api::{AppState, InnerState},
+    api::AppState,
     stream::{ClewdrConfig, ClewdrTransformer},
-    utils::{ClewdrError, ENDPOINT, TEST_MESSAGE, TIME_ZONE, check_res_err, header_ref},
+    utils::{
+        ClewdrError, ENDPOINT, TEST_MESSAGE, TIME_ZONE, check_res_err, header_ref, print_out_json,
+        print_out_text,
+    },
 };
-use axum::{
-    Json,
-    body::Body,
-    extract::{Request, State},
-    http::HeaderMap,
-};
+use axum::{Json, body::Body, extract::State, http::HeaderMap};
 use bytes::Bytes;
 use futures::pin_mut;
 use regex::{Regex, RegexBuilder};
 use rquest::header::{ACCEPT, COOKIE, ORIGIN, REFERER};
-use serde::{de, ser};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tracing::info;
 
 pub async fn stream_example(
@@ -181,9 +178,14 @@ pub async fn completion(
     State(state): State<AppState>,
     header: HeaderMap,
     Json(payload): Json<ClientRequestInfo>,
-) -> Result<Body, ClewdrError> {
-    let b = state.try_completion(payload).await;
-    b
+) -> Body {
+    match state.try_completion(payload).await {
+        Ok(b) => b,
+        Err(e) => {
+            info!("Error: {:?}", e);
+            Body::from(e.to_string())
+        }
+    }
 }
 
 impl AppState {
@@ -210,6 +212,7 @@ impl AppState {
         if p.messages.is_empty() {
             return Err(ClewdrError::WrongCompletionFormat);
         }
+        print_out_json(&p, "log/0.messages.json");
         if !p.stream && p.messages.len() == 1 && p.messages.first() == Some(&TEST_MESSAGE) {
             return Ok(Body::from(
                 json!({
@@ -307,6 +310,7 @@ impl AppState {
         r#type = RetryStrategy::Renew;
         // TODO: generate prompts
         let (prompt, systems) = self.handle_messages(&p.messages, r#type);
+        print_out_text(&prompt, "log/1.extract_msg.txt");
         let legacy = {
             let re = RegexBuilder::new(r"claude-([12]|instant)")
                 .case_insensitive(true)
@@ -373,9 +377,11 @@ impl AppState {
             // TODO: handle api key
             unimplemented!()
         };
+        print_out_text(&prompt, "log/2.xml.txt");
         let mut pr = self.pad_txt(prompt);
+        print_out_text(&pr, "log/3.pad.txt");
         // TODO: 我 log 你的吗，log 都写那么难看
-
+        // panic!("log");
         // finally, send the request
         // TODO: handle retry regeneration
         let mut attach = json!([]);
@@ -404,12 +410,17 @@ impl AppState {
         let body = json!({
             "attachments": attach,
             "files": [],
-            "model": s.is_pro.read().as_ref(),
+            "model": if s.is_pro.read().as_ref().is_some() {
+                Some(s.model.read().as_ref().cloned().unwrap_or_default())
+            } else {
+                None
+            },
             "rendering_mode": "raw",
             // TODO: pass parameters
             "prompt": pr,
             "timezone": TIME_ZONE,
         });
+        print_out_json(&body, "log/4.req.json");
         let endpoint = if s.config.read().api_rproxy.is_empty() {
             ENDPOINT.to_string()
         } else {
@@ -433,7 +444,6 @@ impl AppState {
             .await?;
         self.update_cookie_from_res(&api_res);
         let api_res = check_res_err(api_res).await?;
-        let status = api_res.status();
         let trans = ClewdrTransformer::new(ClewdrConfig::new(
             TITLE,
             s.model
@@ -446,7 +456,8 @@ impl AppState {
             s.config.read().buffer_size as usize,
             s.config.read().settings.prevent_imperson,
         ));
-        let stream = api_res.bytes_stream();
-        Ok(Body::from_stream(trans.transform_stream(stream)))
+        let input_stream = api_res.bytes_stream();
+        let output_stream = trans.transform_stream(input_stream);
+        Ok(Body::from_stream(output_stream))
     }
 }
