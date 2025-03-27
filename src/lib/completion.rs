@@ -12,10 +12,11 @@ use bytes::Bytes;
 use futures::pin_mut;
 use regex::{Regex, RegexBuilder};
 use rquest::header::{ACCEPT, COOKIE, ORIGIN, REFERER};
+use serde::de;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use tracing::info;
+use tracing::{debug, info};
 
 pub async fn stream_example(
     State(state): State<AppState>,
@@ -82,7 +83,7 @@ pub struct ClientRequestInfo {
 impl ClientRequestInfo {
     fn sanitize_client_request(mut self) -> ClientRequestInfo {
         if let Some(ref mut temp) = self.temperature {
-            *temp = temp.clamp(0.0, 1.0);
+            *temp = temp.clamp(0.1, 1.0);
         }
         self
     }
@@ -213,6 +214,7 @@ impl AppState {
             return Err(ClewdrError::WrongCompletionFormat);
         }
         print_out_json(&p, "log/0.messages.json");
+        debug!("Messages processed");
         if !p.stream && p.messages.len() == 1 && p.messages.first() == Some(&TEST_MESSAGE) {
             return Ok(Body::from(
                 json!({
@@ -310,7 +312,8 @@ impl AppState {
         r#type = RetryStrategy::Renew;
         // TODO: generate prompts
         let (prompt, systems) = self.handle_messages(&p.messages, r#type);
-        print_out_text(&prompt, "log/1.extract_msg.txt");
+        print_out_text(&prompt, "log/1.prompt.txt");
+        debug!("Prompt processed");
         let legacy = {
             let re = RegexBuilder::new(r"claude-([12]|instant)")
                 .case_insensitive(true)
@@ -378,8 +381,10 @@ impl AppState {
             unimplemented!()
         };
         print_out_text(&prompt, "log/2.xml.txt");
+        debug!("XML regex processed");
         let mut pr = self.pad_txt(prompt);
         print_out_text(&pr, "log/3.pad.txt");
+        debug!("Pad txt processed");
         // TODO: 我 log 你的吗，log 都写那么难看
         // panic!("log");
         // finally, send the request
@@ -424,9 +429,10 @@ impl AppState {
             body["max_tokens_to_sample"] = json!(p.max_tokens);
             body["top_k"] = json!(p.top_k);
             body["top_p"] = json!(p.top_p);
-            body["temperature"] = json!(p.temperature);
+            // body["temperature"] = json!(p.temperature);
         }
         print_out_json(&body, "log/4.req.json");
+        debug!("Req body processed");
         let endpoint = if s.config.read().api_rproxy.is_empty() {
             ENDPOINT.to_string()
         } else {

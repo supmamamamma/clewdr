@@ -8,9 +8,18 @@ use clewdr::{
 #[tokio::main]
 async fn main() -> Result<(), ClewdrError> {
     // construct a subscriber that prints formatted traces to stdout
-    let subscriber = tracing_subscriber::FmtSubscriber::new();
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::new("%H:%M:%S%.3f".to_string());
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
+        .from_env()
+        .unwrap_or_default()
+        .add_directive("clewdr=debug".parse().unwrap_or_default());
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_timer(timer)
+        .compact()
+        .init();
     // use that subscriber to process traces emitted after this point
-    tracing::subscriber::set_global_default(subscriber).unwrap();
     println!("{}", *BANNER);
     let config = Config::load()?.validate();
     let state = AppState::new(config);
