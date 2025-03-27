@@ -426,9 +426,10 @@ impl AppState {
             "timezone": TIME_ZONE,
         });
         if s.config.read().settings.pass_params {
-            body["max_tokens_to_sample"] = json!(p.max_tokens);
-            body["top_k"] = json!(p.top_k);
-            body["top_p"] = json!(p.top_p);
+            p.max_tokens
+                .map(|mt| body["max_tokens_to_sample"] = json!(mt));
+            p.top_k.map(|tk| body["top_k"] = json!(tk));
+            p.top_p.map(|tp| body["top_p"] = json!(tp));
             // body["temperature"] = json!(p.temperature);
         }
         print_out_json(&body, "log/4.req.json");

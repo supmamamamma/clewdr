@@ -82,6 +82,18 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let sys_messages_len = system_messages.len();
+        let re = fancy_regex::RegexBuilder::new(r"(?m){{scenario}}")
+            .case_insensitive(true)
+            .build()
+            .unwrap();
+        let re1 = fancy_regex::RegexBuilder::new(r"(?m){{char}}")
+            .case_insensitive(true)
+            .build()
+            .unwrap();
+        let re2 = fancy_regex::RegexBuilder::new(r"(?m){{personality}}")
+            .case_insensitive(true)
+            .build()
+            .unwrap();
         for (i, m) in system_messages.iter_mut().enumerate() {
             if let Some(scenario) = re_scenario
                 .captures(&m.content)
@@ -90,10 +102,6 @@ impl AppState {
                 .and_then(|c| c.get(1))
                 .map(|c| c.as_str())
             {
-                let re = fancy_regex::RegexBuilder::new(r"(?m){{scenario}}")
-                    .case_insensitive(true)
-                    .build()
-                    .unwrap();
                 m.content = re
                     .replace_all(&s.config.read().scenario_format, scenario)
                     .to_string();
@@ -101,14 +109,6 @@ impl AppState {
             }
             let personalities = re_personality.captures(&m.content).ok().and_then(|c| c);
             if personalities.is_some() && personalities.as_ref().unwrap().len() == 3 {
-                let re1 = fancy_regex::RegexBuilder::new(r"(?m){{char}}")
-                    .case_insensitive(true)
-                    .build()
-                    .unwrap();
-                let re2 = fancy_regex::RegexBuilder::new(r"(?m){{personality}}")
-                    .case_insensitive(true)
-                    .build()
-                    .unwrap();
                 let new_content = re1
                     .replace_all(
                         &s.config.read().personality_format,

@@ -294,11 +294,9 @@ pub async fn check_res_err(res: Response) -> Result<Response, ClewdrError> {
         if let Some(time) = err_api["message"]
             .as_str()
             .and_then(|m| serde_json::from_str::<Value>(m).ok())
-            .and_then(|m| m["resetAt"].as_str().map(|s| s.to_string()))
+            .and_then(|m| m["resetsAt"].as_i64())
         {
-            let reset_time = chrono::DateTime::parse_from_rfc3339(&time)
-                .unwrap()
-                .to_utc();
+            let reset_time = chrono::DateTime::from_timestamp(time, 0).unwrap().to_utc();
             let now = chrono::Utc::now();
             let diff = reset_time - now;
             let hours = diff.num_hours();
