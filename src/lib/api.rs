@@ -1,6 +1,3 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
-
-use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -14,18 +11,36 @@ use parking_lot::RwLock;
 use regex::{Regex, RegexBuilder};
 use rquest::Response;
 use serde_json::{Value, json};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{spawn, time::timeout};
 use tracing::error;
 
 use crate::{
     NORMAL_CLIENT, SUPER_CLIENT,
-    completion::{completion, stream_example},
-    config::{Config, CookieInfo, UselessCookie, UselessReason},
-    utils::{
-        ClewdrError, ENDPOINT, InvalidAuth, JsBool, MODELS, check_res_err, header_ref,
-        print_out_json,
-    },
+    completion::{Message, completion, stream_example},
+    config::{Config, UselessCookie, UselessReason},
+    utils::{ClewdrError, ENDPOINT, JsBool, MODELS, check_res_err, header_ref, print_out_json},
 };
+
+impl RouterBuilder {
+    pub fn new(state: AppState) -> Self {
+        Self {
+            inner: Router::new()
+                .route("/v1/test", post(stream_example))
+                .route("/v1/models", get(get_models))
+                .route("/v1/chat/completions", post(completion))
+                .route("/v1/complete", post(api_complete))
+                .route("/v1", options(api_options))
+                .route("/", options(api_options))
+                .fallback(api_fallback)
+                .with_state(state),
+        }
+    }
+
+    pub fn build(self) -> Router {
+        self.inner
+    }
+}
 
 pub struct RouterBuilder {
     inner: Router,
@@ -34,9 +49,9 @@ pub struct RouterBuilder {
 #[derive(Default)]
 pub struct InnerState {
     pub config: RwLock<Config>,
-    model_list: RwLock<Vec<String>>,
+    pub model_list: RwLock<Vec<String>>,
     pub is_pro: RwLock<Option<String>>,
-    pub cookie_model: RwLock<String>,
+    pub cookie_model: RwLock<Option<String>>,
     pub uuid_org: RwLock<String>,
     pub changing: RwLock<bool>,
     pub change_flag: RwLock<usize>,
@@ -51,6 +66,8 @@ pub struct InnerState {
     pub conv_uuid: RwLock<Option<String>>,
     pub conv_char: RwLock<Option<String>>,
     pub conv_depth: RwLock<i64>,
+    pub prev_messages: RwLock<Vec<Message>>,
+    pub prev_impersonated: RwLock<bool>,
 }
 
 #[derive(Clone)]
@@ -69,14 +86,14 @@ impl AppState {
         AppState(m)
     }
 
-    fn update_cookie_from_res(&self, res: &Response) {
+    pub fn update_cookie_from_res(&self, res: &Response) {
         res.headers()
             .get("set-cookie")
             .and_then(|h| h.to_str().ok())
             .map(|s| self.update_cookies(s));
     }
 
-    fn update_cookies(&self, str: &str) {
+    pub fn update_cookies(&self, str: &str) {
         let str = str.split("\n").to_owned().collect::<Vec<_>>().join("");
         if str.is_empty() {
             return;
@@ -100,7 +117,7 @@ impl AppState {
             });
     }
 
-    fn header_cookie(&self) -> String {
+    pub fn header_cookie(&self) -> String {
         let cookies = self.0.cookies.read();
         cookies
             .iter()
@@ -119,7 +136,7 @@ impl AppState {
             .to_string()
     }
 
-    fn cookie_changer(&self, reset_timer: Option<bool>, cleanup: Option<bool>) -> bool {
+    pub fn cookie_changer(&self, reset_timer: Option<bool>, cleanup: Option<bool>) -> bool {
         let my_state = self.0.clone();
         let reset_timer = reset_timer.unwrap_or(true);
         let cleanup = cleanup.unwrap_or(false);
@@ -156,7 +173,17 @@ impl AppState {
         }
     }
 
-    fn cookie_cleaner(&self, reason: UselessReason) -> bool {
+    pub fn wait_for_change(&self) -> impl Future<Output = ()> {
+        async {
+            // if changing is true, wait for it to be false
+            let istate = self.0.clone();
+            while *istate.changing.read() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    pub fn cookie_cleaner(&self, reason: UselessReason) -> bool {
         let mut config = self.0.config.write();
         if config.current_cookie_info().is_none() {
             return false;
@@ -175,7 +202,7 @@ impl AppState {
         self.cookie_changer(Some(true), Some(true))
     }
 
-    async fn on_listen_catch(&self) -> anyhow::Result<bool> {
+    async fn on_listen_catch(&self) -> Result<bool, ClewdrError> {
         let istate = self.0.clone();
         let config = istate.config.read();
         let percentage = ((*istate.change_times.read() as f32)
@@ -201,11 +228,8 @@ impl AppState {
             .send()
             .await?;
         let mut bootstrap: Option<Value> = None;
-        let _ = check_res_err(res, &mut bootstrap).await;
-        let bootstrap = bootstrap
-            .invalid_auth()?
-            .context("Failed to get bootstrap")?;
-
+        check_res_err(res, &mut bootstrap).await?;
+        let bootstrap = bootstrap.ok_or(ClewdrError::UnexpectedNone)?;
         if bootstrap["account"].is_null() {
             println!("{}", "Null Error, Useless Cookie".red());
             return Ok(self.cookie_cleaner(UselessReason::Null));
@@ -222,7 +246,7 @@ impl AppState {
                     .map_or(false, |c| c.iter().any(|c| c.as_str() == Some("chat")))
             })
             .and_then(|m| m["organization"].as_object())
-            .context("Failed to get account info")?;
+            .ok_or(ClewdrError::UnexpectedNone)?;
         let mut cookie_model = None;
         if let Some(model) = bootstrap.pointer("/statsig/values/layer_configs/HPOHwBLNLQLxkj5Yn4bfSkgCQnBX28kPR7h~1BNKdVLw=/value/console_default_model_override/model")
             .and_then(|m| m.as_str())
@@ -248,7 +272,7 @@ impl AppState {
             }
         }
         *istate.is_pro.write() = is_pro.clone();
-        *istate.cookie_model.write() = cookie_model.clone().unwrap_or_default();
+        *istate.cookie_model.write() = cookie_model.clone();
 
         // Check if cookie model is unknown (not in known models or in config's unknown models)
         let mut config = istate.config.write();
@@ -320,7 +344,7 @@ impl AppState {
         );
         let uuid = boot_acc_info["uuid"]
             .as_str()
-            .context("Failed to get uuid")?;
+            .ok_or(ClewdrError::UnexpectedNone)?;
         let uuid_included = istate.uuid_org_array.read().clone();
         let uuid_included = boot_acc_info["uuid"].as_str().map_or(false, |uuid| {
             uuid_included.iter().any(|u| u.as_str() == uuid)
@@ -365,10 +389,8 @@ impl AppState {
             .await?;
         self.update_cookie_from_res(&res);
         let mut ret_json: Option<Value> = None;
-        let _ = check_res_err(res, &mut ret_json).await;
-        let ret_json = ret_json
-            .invalid_auth()?
-            .context("Failed to get organizations")?;
+        check_res_err(res, &mut ret_json).await?;
+        let ret_json = ret_json.ok_or(ClewdrError::UnexpectedNone)?;
         // print bootstrap to out.json, if it exists, overwrite it
         let acc_info = ret_json
             .as_array()
@@ -379,7 +401,7 @@ impl AppState {
                         .map_or(false, |c| c.iter().any(|c| c.as_str() == Some("chat")))
                 })
             })
-            .context("Failed to get account info")?;
+            .ok_or(ClewdrError::UnexpectedNone)?;
 
         acc_info.get("uuid").and_then(|u| u.as_str()).map(|u| {
             *istate.uuid_org.write() = u.to_string();
@@ -450,15 +472,18 @@ impl AppState {
                             else {
                                 return;
                             };
-                            let mut ret_json: Option<Value> = None;
-                            let _ = check_res_err(res, &mut ret_json).await;
-                            let Some(ret_json) = ret_json else {
-                                return;
+                            self.update_cookie_from_res(&res);
+                            let json = match res.json::<Value>().await {
+                                Ok(json) => json,
+                                Err(e) => {
+                                    error!("Failed to parse response json: {}", e);
+                                    return;
+                                }
                             };
-                            let json_error = ret_json.get("error");
+                            let json_error = json.get("error");
                             let error_message = json_error.and_then(|e| e.get("message"));
                             let error_type = json_error.and_then(|e| e.get("type"));
-                            let json_detail = ret_json.get("detail");
+                            let json_detail = json.get("detail");
                             let message = if json_error.is_some() {
                                 error_message
                                     .or(json_detail)
@@ -520,7 +545,7 @@ impl AppState {
                 .await?;
 
             self.update_cookie_from_res(&res);
-            let _ = check_res_err(res, &mut None).await;
+            check_res_err(res, &mut None).await?;
         }
         *self.0.changing.write() = false;
         let endpoint = self.0.config.read().endpoint();
@@ -539,11 +564,7 @@ impl AppState {
             .send()
             .await?;
         self.update_cookie_from_res(&res);
-        let mut ret_json: Option<Value> = None;
-        let _ = check_res_err(res, &mut ret_json).await;
-        let ret_json = ret_json
-            .invalid_auth()?
-            .context("Failed to get conversations")?;
+        let ret_json = res.json::<Value>().await?;
         let cons = ret_json.as_array().cloned().unwrap_or_default();
         // TODO: Do I need a pool to delete the conversations?
         let futures = cons
@@ -594,14 +615,15 @@ impl AppState {
         let res = self.on_listen_catch().await;
         match res {
             Ok(b) => b,
-            Err(e) => {
-                match e.downcast_ref::<ClewdrError>() {
-                    Some(ClewdrError::InvalidAuth) => {
-                        println!("{}", "Invalid authorization".red());
-                        return self.cookie_cleaner(UselessReason::Invalid);
-                    }
-                    _ => {}
+            Err(ClewdrError::JsError(v)) => {
+                if Some(json!("Invalid authorization")) == v.message {
+                    error!("{}", "Invalid authorization".red());
+                    return self.cookie_cleaner(UselessReason::Invalid);
+                } else {
+                    false
                 }
+            }
+            Err(e) => {
                 error!("CLewdR: {}", e);
                 self.cookie_changer(None, None);
                 false
@@ -609,7 +631,7 @@ impl AppState {
         }
     }
 
-    async fn delete_chat(&self, uuid: String) -> anyhow::Result<()> {
+    pub async fn delete_chat(&self, uuid: String) -> Result<(), ClewdrError> {
         if uuid.is_empty() {
             return Ok(());
         }
@@ -647,25 +669,6 @@ impl AppState {
     }
 }
 
-impl RouterBuilder {
-    pub fn new(state: AppState) -> Self {
-        Self {
-            inner: Router::new()
-                .route("/v1/test", post(stream_example))
-                .route("/v1/models", get(get_models))
-                .route("/v1/chat/completions", post(completion))
-                .route("/v1/complete", post(api_complete))
-                .route("/v1", options(api_options))
-                .route("/", options(api_options))
-                .fallback(api_fallback)
-                .with_state(state),
-        }
-    }
-
-    pub fn build(self) -> Router {
-        self.inner
-    }
-}
 async fn api_options() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());

@@ -1,12 +1,16 @@
-use anyhow::Result;
-use clewdr::{self, api::AppState, config::Config, utils::BANNER};
+use clewdr::{
+    self,
+    api::AppState,
+    config::Config,
+    utils::{BANNER, ClewdrError},
+};
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), ClewdrError> {
     // construct a subscriber that prints formatted traces to stdout
     let subscriber = tracing_subscriber::FmtSubscriber::new();
     // use that subscriber to process traces emitted after this point
-    tracing::subscriber::set_global_default(subscriber)?;
+    tracing::subscriber::set_global_default(subscriber).unwrap();
     println!("{}", *BANNER);
     let config = Config::load()?.validate();
     let state = AppState::new(config);

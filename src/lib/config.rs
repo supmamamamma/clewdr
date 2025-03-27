@@ -1,11 +1,10 @@
-use anyhow::Result;
 use colored::Colorize;
 use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tracing::warn;
 
-use crate::utils::ENDPOINT;
+use crate::utils::{ClewdrError, ENDPOINT};
 
 const CONFIG_PATH: &str = "config.toml";
 
@@ -243,7 +242,7 @@ impl Default for Settings {
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<Self, ClewdrError> {
         let file_string = std::fs::read_to_string(CONFIG_PATH);
         match file_string {
             Ok(file_string) => {
@@ -273,7 +272,7 @@ impl Config {
         format!("{}:{}", self.ip, self.port)
     }
 
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<(), ClewdrError> {
         // Check if the config directory exists, if not create it
         if !std::path::Path::new("config").exists() {
             std::fs::create_dir("config")?;

@@ -10,9 +10,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use transform_stream::{AsyncTryStream, Yielder};
 
-use crate::utils::{ClewdrError, DANGER_CHARS, generic_fixes, index_of_any};
+use crate::utils::{
+    ClewdrError, DANGER_CHARS, check_json_err, clean_json, generic_fixes, index_of_any,
+};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ClewdrConfig {
     version: String,
     model: String,
@@ -39,6 +41,7 @@ impl ClewdrConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct ClewdrTransformer {
     config: ClewdrConfig,
     cancel: CancellationToken,
@@ -136,21 +139,26 @@ impl ClewdrTransformer {
         self.end_early(y).await;
     }
 
-    async fn parse_buf(
-        &mut self,
-        buf: &str,
-        y: &mut Yielder<Result<String, ClewdrError>>,
-    ) -> Result<(), ClewdrError> {
+    async fn parse_buf(&mut self, buf: &str, y: &mut Yielder<Result<String, ClewdrError>>) {
         let mut delay = false;
         if buf.is_empty() {
-            return Ok(());
+            return;
         }
         if self.cancel.is_cancelled() {
-            return Ok(());
+            return;
         }
-        let mut parsed = serde_json::from_str::<Value>(buf)?;
+        let buf = clean_json(buf);
+        let Ok(mut parsed) = serde_json::from_str::<Value>(buf) else {
+            warn!("Failed to parse JSON: {}", buf);
+            return;
+        };
         if let Some(error) = parsed.get("error") {
-            return Ok(self.err_json(error.clone(), y).await);
+            let constructed_error = json!({
+                "error": error,
+                "status": 500,
+            });
+            let error = check_json_err(&constructed_error);
+            return self.err_json(error, y).await;
         }
         if self.config.model.is_empty() {
             if let Some(model) = parsed.get("model").and_then(|m| m.as_str()) {
@@ -187,7 +195,6 @@ impl ClewdrTransformer {
                     .await;
             }
         }
-        Ok(())
     }
 
     async fn imperson_check(&self, reply: &str, y: &mut Yielder<Result<String, ClewdrError>>) {
@@ -221,19 +228,16 @@ impl ClewdrTransformer {
         self.raw_string = last_msg.unwrap_or_default();
 
         for i in substr {
-            self.parse_buf(i, y).await?;
+            self.parse_buf(i, y).await;
         }
         Ok(())
     }
 
-    async fn flush(
-        &mut self,
-        y: &mut Yielder<Result<String, ClewdrError>>,
-    ) -> Result<(), ClewdrError> {
+    async fn flush(&mut self, y: &mut Yielder<Result<String, ClewdrError>>) {
         // Flush logic
         if !self.raw_string.is_empty() {
             let raw = mem::take(&mut self.raw_string);
-            self.parse_buf(raw.as_str(), y).await?;
+            self.parse_buf(raw.as_str(), y).await;
         }
 
         if self.config.streaming {
@@ -257,7 +261,6 @@ impl ClewdrTransformer {
         if self.config.streaming {
             y.yield_ok("data: [DONE]\n\n".to_string()).await;
         }
-        Ok(())
     }
 
     pub fn transform_stream<S>(
@@ -277,14 +280,14 @@ impl ClewdrTransformer {
                 select! {
                     _ = self.cancel.cancelled() => {
                         self.end_early(&mut y).await;
-                        return Err(ClewdrError::StreamCancelled);
+                        return Err(ClewdrError::StreamCancelled(self));
                     }
 
                     chunk = input.next() => {
                         if let Some(chunk) = chunk {
                             if let Err(e) = self.transform(chunk, &mut y).await {
                                 self.err(e, &mut y).await;
-                                return Err(ClewdrError::StreamInternalError);
+                                return Err(ClewdrError::StreamInternalError(self));
                             }
                         } else {
                             break;
@@ -292,11 +295,8 @@ impl ClewdrTransformer {
                     }
                 }
             }
-            if let Err(e) = self.flush(&mut y).await {
-                self.err(e, &mut y).await;
-                return Err(ClewdrError::StreamInternalError);
-            }
-            Ok(())
+            self.flush(&mut y).await;
+            Err(ClewdrError::StreamEndNormal(self))
         })
     }
 }
