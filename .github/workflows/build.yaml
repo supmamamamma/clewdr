@@ -27,16 +27,27 @@ jobs:
         with:
           toolchain: stable # 使用稳定版 Rust
 
+      # 第三步：安装系统依赖项
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential cmake perl pkg-config libclang-dev musl-tools
+          # 使用 musl-tools 可能意味着你想进行 musl 静态链接构建
+          # 如果是这样，你可能还需要安装 musl target:
+          # rustup target add x86_64-unknown-linux-musl
+
       # 可选：缓存 Cargo 依赖项以加快构建速度
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      # 第三步：构建项目 (Release 模式)
+      # 第四步：构建项目 (Release 模式)
       # 使用 --locked 确保使用 Cargo.lock 中锁定的依赖版本
       - name: Build Project
         run: cargo build --release --locked
+        # 如果你需要 musl 静态链接构建，请注释掉上面一行，并取消下面一行的注释
+        # run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
-      # 第四步：准备 Release 资源
+      # 第五步：准备 Release 资源
       # - 获取仓库名、tag名
       # - 确定目标架构和系统 (基于 runner)
       # - 确定二进制文件路径
@@ -49,23 +60,30 @@ jobs:
           REPO_NAME=$(echo "${{ github.repository }}" | awk -F / '{print $2}')
           # 获取触发工作流的 tag 名称
           TAG_NAME="${{ github.ref_name }}"
-          # 确定目标架构和系统 (对于 ubuntu-latest runner)
+
+          # 确定目标架构和系统
           # 你可以根据需要修改或使用 matrix strategy 来支持多平台
           TARGET_ARCH="x86_64"
           TARGET_OS="linux"
+          # 如果你需要 musl 静态链接构建，请取消下面一行的注释，并注释掉上面一行
+          # TARGET_OS="linux-musl"
 
           # 查找 target/release 目录下的可执行文件
           # 尝试查找不含 '.' 的文件以避免匹配到调试文件或依赖项，然后选择第一个找到的
-          SOURCE_BINARY_PATH=$(find ./target/release -maxdepth 1 -type f -executable -not -name '*.*' | head -n 1)
+          SOURCE_BINARY_PATH_DIR="./target/release"
+          # 如果你需要 musl 静态链接构建，请注释掉上面一行，并取消下面一行的注释
+          # SOURCE_BINARY_PATH_DIR="./target/x86_64-unknown-linux-musl/release"
+
+          SOURCE_BINARY_PATH=$(find "$SOURCE_BINARY_PATH_DIR" -maxdepth 1 -type f -executable -not -name '*.*' | head -n 1)
 
           # 如果找不到，尝试使用仓库名作为二进制文件名 (常见情况)
           if [ -z "$SOURCE_BINARY_PATH" ]; then
-            FALLBACK_PATH="./target/release/$REPO_NAME"
+            FALLBACK_PATH="$SOURCE_BINARY_PATH_DIR/$REPO_NAME"
             if [ -f "$FALLBACK_PATH" ]; then
               SOURCE_BINARY_PATH="$FALLBACK_PATH"
               echo "Could not auto-detect binary, using fallback: $SOURCE_BINARY_PATH"
             else
-              echo "Error: Could not find the executable binary in ./target/release/"
+              echo "Error: Could not find the executable binary in $SOURCE_BINARY_PATH_DIR/"
               echo "Please ensure your binary name is conventional or adjust the script."
               exit 1
             fi
@@ -89,7 +107,7 @@ jobs:
           # 可以自定义 Release 的描述信息，例如指向 CHANGELOG
           echo "body=Automatic release for tag ${TAG_NAME}. See CHANGELOG.md for details." >> $GITHUB_OUTPUT
 
-      # 第五步：创建 GitHub Release 并上传资源
+      # 第六步：创建 GitHub Release 并上传资源
       # 使用 softprops/action-gh-release action 来完成此操作
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v1
