@@ -249,6 +249,7 @@ impl AppState {
         }
         let current_prompts = PromptsGroup::find(&p.messages);
         let previous_prompts = PromptsGroup::find(&s.prev_messages.read());
+        debug!("Raw prompts processed");
         let same_prompts = {
             let mut a = p
                 .messages
@@ -261,6 +262,7 @@ impl AppState {
             b.sort();
             a == b
         };
+        debug!("Same prompts: {}", same_prompts);
         let same_char_diff_chat = !same_prompts
             && current_prompts.first_system.map(|s| s.content)
                 == previous_prompts.first_system.map(|s| s.content)
@@ -277,12 +279,15 @@ impl AppState {
         if !same_prompts {
             *s.prev_messages.write() = p.messages.clone();
         }
+        debug!("Previous prompts processed");
         let r#type;
         // TODO: handle api key
         //TODO: handle retry regeneration and not same prompts
-        if let Some(uuid) = s.conv_uuid.read().clone() {
+        let uuid = s.conv_uuid.read().clone();
+        if let Some(uuid) = uuid{
             self.delete_chat(uuid).await?;
         }
+        debug!("Chat deleted");
         *s.conv_uuid.write() = Some(uuid::Uuid::new_v4().to_string());
         *s.conv_depth.write() = 0;
         let endpoint = if s.config.read().rproxy.is_empty() {
@@ -307,6 +312,7 @@ impl AppState {
             .header_append(COOKIE, self.header_cookie())
             .send()
             .await?;
+        debug!("New conversation created");
         self.update_cookie_from_res(&api_res);
         check_res_err(api_res).await?;
         r#type = RetryStrategy::Renew;

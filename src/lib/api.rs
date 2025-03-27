@@ -9,11 +9,14 @@ use colored::Colorize;
 use const_format::{concatc, formatc};
 use parking_lot::RwLock;
 use regex::{Regex, RegexBuilder};
-use rquest::Response;
+use rquest::{
+    Response,
+    header::{COOKIE, ORIGIN, REFERER},
+};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{spawn, time::timeout};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::{
     NORMAL_CLIENT, SUPER_CLIENT,
@@ -636,13 +639,13 @@ impl AppState {
         }
         let istate = self.0.clone();
         let conv_uuid = istate.conv_uuid.read().clone();
-        let Some(conv_uuid) = conv_uuid else {
-            return Ok(());
+        if let Some(conv_uuid) = conv_uuid {
+            if uuid == conv_uuid {
+                istate.conv_uuid.write().take();
+                debug!("Deleting chat: {}", uuid);
+                *istate.conv_depth.write() = 0;
+            }
         };
-        if uuid == conv_uuid {
-            istate.conv_uuid.write().take();
-            *istate.conv_depth.write() = 0;
-        }
         if istate.config.read().settings.preserve_chats {
             return Ok(());
         }
@@ -655,14 +658,11 @@ impl AppState {
         let cookies = self.header_cookie();
         let res = SUPER_CLIENT
             .delete(endpoint.clone())
-            .header_append("Origin", ENDPOINT)
-            .header_append("Referer", header_ref(""))
-            .header_append("Cookie", cookies)
+            .header_append(ORIGIN, ENDPOINT)
+            .header_append(REFERER, header_ref(""))
+            .header_append(COOKIE, cookies)
             .send()
-            .await
-            .inspect_err(|e| {
-                error!("Failed to connect to {}: {}", endpoint, e);
-            })?;
+            .await?;
         self.update_cookie_from_res(&res);
         Ok(())
     }
