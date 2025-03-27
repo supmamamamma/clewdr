@@ -47,7 +47,6 @@ jobs:
         env: 
           CC_x86_64-unknown-linux-musl: musl-gcc
           CXX_x86_64-unknown-linux-musl: musl-g++
-          AR_x86_64-unknown-linux-musl: musl-ar
         # 使用 --target 进行 musl 静态链接构建
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
