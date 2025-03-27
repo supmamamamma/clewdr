@@ -3,7 +3,6 @@ use std::borrow::Cow;
 use claude_tokenizer::count_tokens;
 use colored::Colorize;
 use rand::{Rng, RngCore};
-use regex::{Regex, RegexBuilder, Replacer};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -19,15 +18,17 @@ impl AppState {
         messages: &[Message],
         strategy: RetryStrategy,
     ) -> (String, Vec<String>) {
-        let re_scenario =
-            RegexBuilder::new(r"^\[Circumstances and context of the dialogue: ([\s\S]+?)\.?\]$")
+        let re_scenario = fancy_regex::RegexBuilder::new(
+            r"^\[Circumstances and context of the dialogue: ([\s\S]+?)\.?\]$",
+        )
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+        let re_personality =
+            fancy_regex::RegexBuilder::new(r"^\[([\s\S]+?)'s personality: ([\s\S]+?)\]$")
                 .case_insensitive(true)
                 .build()
                 .unwrap();
-        let re_personality = RegexBuilder::new(r"^\[([\s\S]+?)'s personality: ([\s\S]+?)\]$")
-            .case_insensitive(true)
-            .build()
-            .unwrap();
         let real_logs = messages
             .iter()
             .filter(|m| ["assistant", "user"].contains(&m.role.as_str()))
@@ -84,11 +85,12 @@ impl AppState {
         for (i, m) in system_messages.iter_mut().enumerate() {
             if let Some(scenario) = re_scenario
                 .captures(&m.content)
+                .ok()
+                .and_then(|c| c)
                 .and_then(|c| c.get(1))
                 .map(|c| c.as_str())
             {
-                let re = RegexBuilder::new(r"{{scenario}}")
-                    .multi_line(true)
+                let re = fancy_regex::RegexBuilder::new(r"(?m){{scenario}}")
                     .case_insensitive(true)
                     .build()
                     .unwrap();
@@ -97,15 +99,13 @@ impl AppState {
                     .to_string();
                 m.scenario = Some(true);
             }
-            let personalities = re_personality.captures(&m.content);
+            let personalities = re_personality.captures(&m.content).ok().and_then(|c| c);
             if personalities.is_some() && personalities.as_ref().unwrap().len() == 3 {
-                let re1 = RegexBuilder::new(r"{{char}}")
-                    .multi_line(true)
+                let re1 = fancy_regex::RegexBuilder::new(r"(?m){{char}}")
                     .case_insensitive(true)
                     .build()
                     .unwrap();
-                let re2 = RegexBuilder::new(r"{{personality}}")
-                    .multi_line(true)
+                let re2 = fancy_regex::RegexBuilder::new(r"(?m){{personality}}")
                     .case_insensitive(true)
                     .build()
                     .unwrap();
@@ -213,16 +213,13 @@ impl AppState {
         };
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
         let mut split_content = {
-            let re = Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap();
+            let re = fancy_regex::Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap();
             re.split(&content)
-                .map(|s| s.to_string())
+                .map_while(|s| s.map(|s| s.to_string()).ok())
                 .collect::<Vec<_>>()
         };
-        let re = RegexBuilder::new(r"<@(\d+)>(.*?)</@\1>")
-            .dot_matches_new_line(true)
-            .build()
-            .unwrap();
-        while let Some(caps) = re.captures(&content) {
+        let re = fancy_regex::Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap();
+        while let Some(caps) = re.captures(&content).ok().and_then(|o| o) {
             let index = split_content.len() as isize - caps[1].parse::<isize>().unwrap() - 1;
             if index < 0 {
                 warn!("{}", "Invalid index".yellow());
@@ -233,7 +230,7 @@ impl AppState {
             }
         }
         let content = split_content.join("\n\n");
-        let re = Regex::new(r"(?s)<@(\d+)>.*?</@\1>").unwrap();
+        let re = fancy_regex::Regex::new(r"(?s)<@(\d+)>.*?</@\1>").unwrap();
         let content = re.replace_all(&content, "").to_string();
         let content = self.xml_plot_regex(content, 2);
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
@@ -257,7 +254,7 @@ impl AppState {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n\nHuman:");
-            let re = Regex::new(r"\n\nHuman: *PlainPrompt:").unwrap();
+            let re = fancy_regex::Regex::new(r"\n\nHuman: *PlainPrompt:").unwrap();
             content = split.clone()
                 + "\n\nPlainPrompt:"
                 + re.replace_all(split.as_str(), "\n\nPlainPrompt:")
@@ -265,14 +262,14 @@ impl AppState {
                     .as_str();
         }
         let c = self.xml_plot_regex(content, 3);
-        let re1 = Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap();
-        let re2 = Regex::new(r"(?m)\r\n|\r").unwrap();
-        let re3 = Regex::new(r"\s*<\|curtail\|>\s*").unwrap();
-        let re4 = Regex::new(r"\s*<\|join\|>\s*").unwrap();
-        let re5 = Regex::new(r"\s*<\|space\|>\s*").unwrap();
-        let re6 = Regex::new(r"\s*\n\n(H(uman)?|A(ssistant)?): +").unwrap();
-        let re7 = Regex::new(r"<\|(\\.*?)\|>").unwrap();
-        let replacer = |caps: &regex::Captures| {
+        let re1 = fancy_regex::Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap();
+        let re2 = fancy_regex::Regex::new(r"(?m)\r\n|\r").unwrap();
+        let re3 = fancy_regex::Regex::new(r"\s*<\|curtail\|>\s*").unwrap();
+        let re4 = fancy_regex::Regex::new(r"\s*<\|join\|>\s*").unwrap();
+        let re5 = fancy_regex::Regex::new(r"\s*<\|space\|>\s*").unwrap();
+        let re6 = fancy_regex::Regex::new(r"\s*\n\n(H(uman)?|A(ssistant)?): +").unwrap();
+        let re7 = fancy_regex::Regex::new(r"<\|(\\.*?)\|>").unwrap();
+        let replacer = |caps: &fancy_regex::Captures| {
             let re = regex::Regex::new(r##"\\?""##).unwrap();
             let Some(p1) = caps.get(1).map(|o| o.as_str()) else {
                 return caps[0].to_string();
@@ -291,10 +288,10 @@ impl AppState {
         let content = re6.replace_all(content.as_str(), "\n\n$1: ").to_string();
         let content = re7.replace_all(content.as_str(), replacer).to_string();
         // TODO: api key logic
-        let re1 = Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap();
-        let re2 = Regex::new(r"\s*<\|.*?\|>\s*").unwrap();
-        let re3 = Regex::new(r"^Human: *|\n\nAssistant: *$").unwrap();
-        let re4 = Regex::new(r"(?<=\n)\n(?=\n)").unwrap();
+        let re1 = fancy_regex::Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap();
+        let re2 = fancy_regex::Regex::new(r"\s*<\|.*?\|>\s*").unwrap();
+        let re3 = fancy_regex::Regex::new(r"^Human: *|\n\nAssistant: *$").unwrap();
+        let re4 = fancy_regex::Regex::new(r"(?<=\n)\n(?=\n)").unwrap();
         let c = if !self.0.config.read().settings.padtxt.is_empty() {
             re1.replace_all(content.as_str(), "\n\n").to_string()
         } else {
@@ -307,27 +304,25 @@ impl AppState {
     }
 
     fn xml_plot_regex(&self, mut content: String, order: i64) -> String {
-        let re = RegexBuilder::new(
+        let re = fancy_regex::Regex::new(
             format!(
-                "<regex(?: +order *= *{}){}> *\"(/?)(.*)\\1(.*?)\" *: *\"(.*?)\" *</regex>",
+                "(:?)<regex(?: +order *= *{}){}> *\"(/?)(.*)\\1(.*?)\" *: *\"(.*?)\" *</regex>",
                 order,
                 if order == 2 { "?" } else { "" }
             )
             .as_str(),
         )
-        .multi_line(true)
-        .build()
         .unwrap();
         let res = re
             .find_iter(content.as_ref())
-            .map(|m| m.as_str().to_string())
+            .map_while(|m| m.map(|m| m.as_str().to_string()).ok())
             .collect::<Vec<_>>();
         for m in res {
-            let re = Regex::new(
+            let re = fancy_regex::Regex::new(
                 r##"<regex(?: +order *= *\d)?> *"(/?)(.*)\1(.*?)" *: *"(.*?)" *</regex>"##,
             )
             .unwrap();
-            if let Some(caps) = re.captures(m.as_str()) {
+            if let Some(caps) = re.captures(m.as_str()).ok().and_then(|o| o) {
                 if caps.len() < 5 {
                     warn!("{}", "Regex capture group is less than 5".yellow());
                     continue;
@@ -381,14 +376,10 @@ impl AppState {
             h
         };
         let placeholder_tokens = count_tokens(placeholder.as_str()).unwrap_or_default();
-        let re = Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
-        let matches = re
-            .find_iter(content.as_str())
-            .map(|m| m.as_str().to_string())
-            .collect::<Vec<_>>();
+        let re = fancy_regex::Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
         while let [m1, m2, ..] = re
             .find_iter(content.as_str())
-            .map(|m| m.as_str().to_string())
+            .map_while(|m| m.ok().map(|m| m.as_str().to_string()))
             .collect::<Vec<_>>()
             .as_slice()
         {
@@ -398,9 +389,9 @@ impl AppState {
                 &placeholder.repeat(m2.parse::<usize>().unwrap_or_default() / placeholder_tokens),
             );
         }
-        let re = Regex::new(r"<\|padtxt off.*?\|>").unwrap();
-        if re.is_match(content.as_str()) {
-            let re = Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
+        let re = fancy_regex::Regex::new(r"<\|padtxt off.*?\|>").unwrap();
+        if re.is_match(content.as_str()).unwrap_or_default() {
+            let re = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
             return re.replace_all(content.as_str(), "\n\n").to_string();
         }
         let padding = placeholder.repeat(
@@ -415,10 +406,10 @@ impl AppState {
                 })
                 / placeholder_tokens,
         );
-        let re = Regex::new(r"<\|padtxt.*?\|>").unwrap();
-        if re.is_match(content.as_str()) {
+        let re = fancy_regex::Regex::new(r"<\|padtxt.*?\|>").unwrap();
+        if re.is_match(content.as_str()).unwrap_or_default() {
             content = re.replace(content.as_str(), padding).to_string();
-            let re2 = Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
+            let re2 = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
             content = re2.replace_all(content.as_str(), "\n\n").to_string();
         } else {
             // TODO: api key logic
@@ -439,18 +430,19 @@ impl AppState {
         }
         if !legacy {
             let re = if fusion {
-                Regex::new(r"(?s)\n(?!\nAssistant:\s*$)(?=\n(Human|Assistant):)").unwrap()
+                fancy_regex::Regex::new(r"(?s)\n(?!\nAssistant:\s*$)(?=\n(Human|Assistant):)")
+                    .unwrap()
             } else {
-                Regex::new(r"\n(?=\n(Human|Assistant):)").unwrap()
+                fancy_regex::Regex::new(r"\n(?=\n(Human|Assistant):)").unwrap()
             };
             prompt = re
                 .replace_all(prompt.as_str(), format!("\n{}", wedge))
                 .to_string();
         } else {
             let re = if fusion {
-                Regex::new(r"(?s)(?<=\n\nAssistant):(?!\s*$)|(?<=\n\nHuman):").unwrap()
+                fancy_regex::Regex::new(r"(?s)(?<=\n\nAssistant):(?!\s*$)|(?<=\n\nHuman):").unwrap()
             } else {
-                Regex::new(r"(?<=\n\n(Human|Assistant)):").unwrap()
+                fancy_regex::Regex::new(r"(?<=\n\n(Human|Assistant)):").unwrap()
             };
             prompt = re.replace_all(prompt.as_str(), "﹕").to_string();
         }
@@ -536,11 +528,9 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
     }
 
     if merge_tag.all && merge_tag.human {
-        let re = RegexBuilder::new(r"(?:\n\n|^\s*)Human:(.*?(?:\n\nAssistant:|$))")
-            .dot_matches_new_line(true)
-            .build()
-            .unwrap();
-        let replacer = |caps: &regex::Captures| {
+        let re =
+            fancy_regex::Regex::new(r"(?s)(?:\n\n|^\s*)Human:(.*?(?:\n\nAssistant:|$))").unwrap();
+        let replacer = |caps: &fancy_regex::Captures| {
             let re = regex::Regex::new(r"\n\nHuman:\s*").unwrap();
             if caps.len() < 2 {
                 return caps[0].to_string();
@@ -552,11 +542,10 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
         content = re.replace_all(&content, replacer).to_string();
     }
     if merge_tag.all && merge_tag.assistant {
-        let re = RegexBuilder::new(r"\n\nAssistant:(.*?(?:\n\nHuman:|$))")
-            .dot_matches_new_line(true)
+        let re = fancy_regex::RegexBuilder::new(r"(?s)\n\nAssistant:(.*?(?:\n\nHuman:|$))")
             .build()
             .unwrap();
-        let replacer = |caps: &regex::Captures| {
+        let replacer = |caps: &fancy_regex::Captures| {
             let re = regex::Regex::new(r"\n\nAssistant:\s*").unwrap();
             if caps.len() < 2 {
                 return caps[0].to_string();

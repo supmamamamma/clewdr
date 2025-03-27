@@ -181,13 +181,13 @@ pub async fn completion(
     State(state): State<AppState>,
     header: HeaderMap,
     Json(payload): Json<ClientRequestInfo>,
-) -> Body {
-    let b = state.try_completion(payload).await.unwrap();
+) -> Result<Body, ClewdrError> {
+    let b = state.try_completion(payload).await;
     b
 }
 
 impl AppState {
-    async fn try_completion(&self, mut payload: ClientRequestInfo) -> Result<Body, ClewdrError> {
+    async fn try_completion(&self, payload: ClientRequestInfo) -> Result<Body, ClewdrError> {
         // TODO: 3rd key, API key, auth token, etc.
         let s = self.0.as_ref();
         let p = payload.sanitize_client_request();
