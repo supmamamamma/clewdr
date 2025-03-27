@@ -15,7 +15,7 @@ permissions:
 jobs:
   build_and_release:
     # 运行环境：使用最新的 Ubuntu runner
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       # 第一步：检出代码
       - name: Checkout code
