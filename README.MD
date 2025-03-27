@@ -4,6 +4,8 @@ Total rewrite of [Clewd修改版](https://github.com/teralomaniac/clewd) in Rust
 
 ## **WORK IN PROGRESS**
 
+**<span style="color:red">开发中，使用后果自负</span>**
+
 ## Advantages
 
 1. **No Node.js**: ~~Although I'm sure all of you playing SillyTavern have it installed~~

@@ -7,7 +7,7 @@ use std::mem;
 use tokio::select;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use transform_stream::{AsyncTryStream, Yielder};
 
 use crate::utils::{
@@ -281,6 +281,7 @@ impl ClewdrTransformer {
             loop {
                 select! {
                     _ = self.cancel.cancelled() => {
+                        error!("Stream cancelled");
                         self.end_early(&mut y).await;
                         return Err(ClewdrError::StreamCancelled(self));
                     }
@@ -288,6 +289,7 @@ impl ClewdrTransformer {
                     chunk = input.next() => {
                         if let Some(chunk) = chunk {
                             if let Err(e) = self.transform(chunk, &mut y).await {
+                                error!("Stream error: {}", e);
                                 self.err(e, &mut y).await;
                                 return Err(ClewdrError::StreamInternalError(self));
                             }
@@ -304,12 +306,15 @@ impl ClewdrTransformer {
                 self.completes.len()
             );
             if self.hard_censor {
+                error!("Stream hard censored");
                 return Err(ClewdrError::HardCensor(self));
             }
             if *self.impersonated.read() {
+                error!("Stream impersonation detected");
                 return Err(ClewdrError::Impersonation(self));
             }
             if self.completes.is_empty() || self.recv_length == 0 {
+                error!("Stream empty");
                 return Err(ClewdrError::EmptyStream(self));
             }
             Ok(())

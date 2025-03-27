@@ -407,7 +407,7 @@ impl AppState {
             }
         }
 
-        let body = json!({
+        let mut body = json!({
             "attachments": attach,
             "files": [],
             "model": if s.is_pro.read().as_ref().is_some() {
@@ -420,6 +420,12 @@ impl AppState {
             "prompt": pr,
             "timezone": TIME_ZONE,
         });
+        if s.config.read().settings.pass_params {
+            body["max_tokens_to_sample"] = json!(p.max_tokens);
+            body["top_k"] = json!(p.top_k);
+            body["top_p"] = json!(p.top_p);
+            body["temperature"] = json!(p.temperature);
+        }
         print_out_json(&body, "log/4.req.json");
         let endpoint = if s.config.read().api_rproxy.is_empty() {
             ENDPOINT.to_string()
