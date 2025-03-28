@@ -1,3 +1,4 @@
+use eventsource_stream::EventStreamError;
 use figlet_rs::FIGfont;
 use rquest::Response;
 use serde_json::{Value, json};
@@ -229,6 +230,8 @@ pub enum ClewdrError {
     EmptyStream(ClewdrTransformer),
     #[error("Unknown Stream error: {1}")]
     UnknownStreamError(ClewdrTransformer, String),
+    #[error("Input stream error: {0}")]
+    EventSourceError(EventStreamError<rquest::Error>),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";

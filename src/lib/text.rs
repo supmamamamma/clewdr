@@ -5,7 +5,7 @@ use colored::Colorize;
 use fancy_regex::Regex;
 use rand::{Rng, RngCore};
 use serde_json::Value;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     api::AppState,
@@ -203,9 +203,11 @@ impl AppState {
     }
 
     pub fn xml_plot(&self, content: String, non_sys: Option<bool>) -> String {
+        debug!("XML Plotting");
         let non_sys = non_sys.unwrap_or_default();
         self.0.regex_log.write().clear();
         let content = self.xml_plot_regex(content, 1);
+        debug!("XML 1st round regex completed");
         let merge_tag = MergeTag {
             all: !content.contains("<|Merge Disable|>"),
             system: !content.contains("<|Merge System Disable|>"),
@@ -213,6 +215,7 @@ impl AppState {
             assistant: !content.contains("<|Merge Assistant Disable|>"),
         };
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
+        debug!("XML 1st merged");
         let mut split_content = {
             static RE: LazyLock<Regex> =
                 LazyLock::new(|| Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap());
@@ -220,6 +223,7 @@ impl AppState {
                 .map_while(|s| s.map(|s| s.to_string()).ok())
                 .collect::<Vec<_>>()
         };
+        debug!("XML splitted");
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
         while let Some(caps) = RE.captures(&content).ok().and_then(|o| o) {
@@ -232,12 +236,14 @@ impl AppState {
                 content = content.replace(caps[0].to_string().as_str(), "");
             }
         }
+        debug!("XML Split handled");
         let content = split_content.join("\n\n");
         static RE_: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
         let content = RE_.replace_all(&content, "").to_string();
         let content = self.xml_plot_regex(content, 2);
         let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
+        debug!("XML 2nd merged");
         let split_human = content
             .split("\n\nHuman:")
             .filter(|s| !s.is_empty())
@@ -267,6 +273,7 @@ impl AppState {
                     .as_str();
         }
         let c = self.xml_plot_regex(content, 3);
+        debug!("XML 3rd round");
         static RE1: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap());
         static RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)\r\n|\r").unwrap());
@@ -294,6 +301,7 @@ impl AppState {
         let content = RE5.replace_all(content.as_str(), " ").to_string();
         let content = RE6.replace_all(content.as_str(), "\n\n$1: ").to_string();
         let content = RE7.replace_all(content.as_str(), replacer).to_string();
+        debug!("XML empty replaced");
         // TODO: api key logic
         static RE8: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap());
@@ -326,11 +334,11 @@ impl AppState {
             .find_iter(content.as_ref())
             .map_while(|m| m.map(|m| m.as_str().to_string()).ok())
             .collect::<Vec<_>>();
+        let re = fancy_regex::Regex::new(
+            r##"<regex(?: +order *= *\d)?> *"(/?)(.*)\1(.*?)" *: *"(.*?)" *</regex>"##,
+        )
+        .unwrap();
         for m in res {
-            let re = fancy_regex::Regex::new(
-                r##"<regex(?: +order *= *\d)?> *"(/?)(.*)\1(.*?)" *: *"(.*?)" *</regex>"##,
-            )
-            .unwrap();
             if let Some(caps) = re.captures(m.as_str()).ok().and_then(|o| o) {
                 if caps.len() < 5 {
                     warn!("{}", "Regex capture group is less than 5".yellow());
@@ -344,6 +352,7 @@ impl AppState {
                     warn!("{}", "ECMA regex is invalid".yellow());
                     continue;
                 };
+                debug!("ECMA Regex: {:?}", ecma_re);
                 let to = to.replace("\\?\"", "\\\"')}\"");
                 content = ecma_re.replace_all(content.as_ref(), to.as_str()).into();
             }
@@ -522,15 +531,23 @@ mod test {
 fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String {
     let re_check = regex::Regex::new(r"(\n\n|^\s*)xmlPlot:\s*").unwrap();
     let mut content = content.to_string();
-
+    debug!("XML Plot Merge: started, non_sys: {}", non_sys);
     if re_check.is_match(&content) {
         if !non_sys {
-            let re_remove = regress::Regex::with_flags(
-                r"(\n\n|^\s*)(?<!\n\n(Human|Assistant):.*?)xmlPlot:\s*",
-                "s",
+            let re_remove = Regex::new(
+                r"(?s)(\n\n|^\s*)xmlPlot:\s*", // TODO: not correct
             )
             .unwrap();
-            content = re_remove.replace_all(&content, "$1").to_string();
+            let re_first_human_assistant = Regex::new(r"(?s)(\n\n(Human|Assistant):.)").unwrap();
+            let border = re_first_human_assistant
+                .find(&content)
+                .ok()
+                .and_then(|o| o)
+                .map(|o| o.range().start)
+                .unwrap_or(content.len());
+            let slice_after = &content.split_off(border);
+            content = re_remove.replace_all(&content, "$1").to_string() + slice_after;
+            debug!("XML Plot Merge: removed for non-sys");
         }
         let re = regex::Regex::new(r"(\n\n|^\s*)xmlPlot: *").unwrap();
         let to = if merge_tag.system && merge_tag.human && merge_tag.all {
@@ -539,6 +556,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
             "$1"
         };
         content = re.replace_all(&content, to).to_string();
+        debug!("XML Plot Merge: replaced");
     }
 
     if merge_tag.all && merge_tag.human {
@@ -555,6 +573,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
         };
         content = re.replace_all(&content, replacer).to_string();
     }
+    debug!("XML Plot Merge: human merged");
     if merge_tag.all && merge_tag.assistant {
         let re = fancy_regex::RegexBuilder::new(r"(?s)\n\nAssistant:(.*?(?:\n\nHuman:|$))")
             .build()
@@ -570,6 +589,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
         };
         content = re.replace_all(&content, replacer).to_string();
     }
+    debug!("XML Plot Merge: assistant merged");
     content
 }
 

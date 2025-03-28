@@ -20,7 +20,7 @@ use tracing::{debug, error};
 
 use crate::{
     NORMAL_CLIENT, SUPER_CLIENT,
-    completion::{Message, completion, stream_example},
+    completion::{Message, completion},
     config::{Config, UselessCookie, UselessReason},
     utils::{ClewdrError, ENDPOINT, JsBool, MODELS, check_res_err, header_ref},
 };
@@ -29,7 +29,6 @@ impl RouterBuilder {
     pub fn new(state: AppState) -> Self {
         Self {
             inner: Router::new()
-                .route("/v1/test", post(stream_example))
                 .route("/v1/models", get(get_models))
                 .route("/v1/chat/completions", post(completion))
                 .route("/v1/complete", post(api_complete))

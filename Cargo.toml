@@ -18,7 +18,7 @@ figlet-rs = "0.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 colored = "3"
-axum = { version = "0.8", features = ["json"] }
+axum = { version = "0.8", features = ["json", "tracing", "tokio", "macros"] }
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
@@ -34,3 +34,4 @@ bytes = "1"
 uuid = { version = "1.16.0", features = ["v4"] }
 regress = "0.10.3"
 fancy-regex = "0.14.0"
+eventsource-stream = "0.2.3"
