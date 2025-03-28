@@ -35,3 +35,4 @@ uuid = { version = "1.16.0", features = ["v4"] }
 regress = "0.10.3"
 fancy-regex = "0.14.0"
 eventsource-stream = "0.2.3"
+tower-http = { version = "0.6.2", features = ["trace"] }

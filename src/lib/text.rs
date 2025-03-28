@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::LazyLock};
+use std::{borrow::Cow, fmt::Write, sync::LazyLock};
 
 use claude_tokenizer::count_tokens;
 use colored::Colorize;
@@ -45,7 +45,7 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         for m in &mut merged_logs {
-            let name = m.name.as_ref().map(|n| n.as_str()).unwrap_or_default();
+            let name = m.name.as_deref().unwrap_or_default();
             m.customname = Some(
                 ["assistant", "user"].contains(&m.role.as_str())
                     && m.name.is_some()
@@ -63,9 +63,9 @@ impl AppState {
             .cloned()
             .cloned();
         if s.config.read().settings.strip_assistant {
-            last_assistant.as_mut().map(|m| {
+            if let Some(m) = last_assistant.as_mut() {
                 m.strip = Some(true);
-            });
+            }
         }
         let mut last_user = real_logs
             .iter()
@@ -73,9 +73,9 @@ impl AppState {
             .cloned()
             .cloned();
         if s.config.read().settings.strip_human {
-            last_user.as_mut().map(|m| {
+            if let Some(m) = last_user.as_mut() {
                 m.strip = Some(true);
-            });
+            }
         }
         let mut system_messages = messages
             .iter()
@@ -292,7 +292,7 @@ impl AppState {
             let Ok(json) = serde_json::from_str::<Value>(p1.as_str()) else {
                 return caps[0].to_string();
             };
-            return json.to_string();
+            json.to_string()
         };
         let content = RE1.replace_all(c.as_str(), "").to_string();
         let content = RE2.replace_all(content.as_str(), "\n").to_string();
@@ -389,7 +389,10 @@ impl AppState {
                 let mut vec = vec![0; rand_size];
                 rand::rng().fill_bytes(&mut vec);
                 // to hex
-                vec.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                vec.iter().fold(String::new(), |mut acc, b| {
+                    let _ = write!(acc, "{b:02X}");
+                    acc
+                })
             } else {
                 h
             }
@@ -411,23 +414,20 @@ impl AppState {
                 &placeholder.repeat(m2.parse::<usize>().unwrap_or_default() / placeholder_tokens),
             );
         }
-        print_out_text(&content, "log/2.1.placeholder.txt");
+        print_out_text(&content, "2.1.placeholder.txt");
         let re = fancy_regex::Regex::new(r"<\|padtxt off.*?\|>").unwrap();
         if re.is_match(content.as_str()).unwrap_or_default() {
             let re = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
             return re.replace_all(content.as_str(), "\n\n").to_string();
         }
         let padding = placeholder.repeat(
-            max_tokens
-                .clone()
-                .min(if tokens <= max_tokens - extra_tokens {
-                    max_tokens - tokens
-                } else if min_tokens > &0 {
-                    min_tokens.clone()
-                } else {
-                    extra_tokens.clone()
-                })
-                / placeholder_tokens,
+            (*max_tokens).min(if tokens <= max_tokens - extra_tokens {
+                max_tokens - tokens
+            } else if min_tokens > &0 {
+                *min_tokens
+            } else {
+                *extra_tokens
+            }) / placeholder_tokens,
         );
         let re = fancy_regex::Regex::new(r"<\|padtxt.*?\|>").unwrap();
         if re.is_match(content.as_str()).unwrap_or_default() {
@@ -514,20 +514,6 @@ impl<'h> Replace<'h> for regress::Regex {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_replace_all() {
-        let re = regress::Regex::with_flags(r"(\d+)", "gs").unwrap();
-        let content = "123 456 789";
-        let to = "$1kkk";
-        let result = re.replace_all(content, to);
-        assert_eq!(result, "123kkk 456kkk 789kkk");
-    }
-}
-
 fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String {
     let re_check = regex::Regex::new(r"(\n\n|^\s*)xmlPlot:\s*").unwrap();
     let mut content = content.to_string();
@@ -569,7 +555,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
             }
             let p1 = caps.get(1).unwrap().as_str();
             let p1 = re.replace_all(p1, "\n\n");
-            return format!("\n\nHuman:{}", p1);
+            format!("\n\nHuman:{}", p1)
         };
         content = re.replace_all(&content, replacer).to_string();
     }
@@ -585,7 +571,7 @@ fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String 
             }
             let p1 = caps.get(1).unwrap().as_str();
             let p1 = re.replace_all(p1, "\n\n");
-            return format!("\n\nAssistant:{}", p1);
+            format!("\n\nAssistant:{}", p1)
         };
         content = re.replace_all(&content, replacer).to_string();
     }
@@ -598,4 +584,18 @@ struct MergeTag {
     system: bool,
     human: bool,
     assistant: bool,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_replace_all() {
+        let re = regress::Regex::with_flags(r"(\d+)", "gs").unwrap();
+        let content = "123 456 789";
+        let to = "$1kkk";
+        let result = re.replace_all(content, to);
+        assert_eq!(result, "123kkk 456kkk 789kkk");
+    }
 }

@@ -2,10 +2,10 @@ use eventsource_stream::EventStreamError;
 use figlet_rs::FIGfont;
 use rquest::Response;
 use serde_json::{Value, json};
-use std::{collections::HashMap, fmt::Display, sync::LazyLock};
+use std::{collections::HashMap, fmt::Display, path::PathBuf, sync::LazyLock};
 use tracing::{error, warn};
 
-use crate::{completion::Message, stream::ClewdrTransformer};
+use crate::{completion::Message, config::CONFIG_NAME, stream::ClewdrTransformer};
 
 const R: [(&str, &str); 5] = [
     ("user", "Human"),
@@ -21,8 +21,7 @@ pub static REPLACEMENT: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| HashMap
 pub static DANGER_CHARS: LazyLock<Vec<char>> = LazyLock::new(|| {
     let mut r: Vec<char> = REPLACEMENT
         .iter()
-        .map(|(_, v)| v.chars())
-        .flatten()
+        .flat_map(|(_, v)| v.chars())
         .chain(['\n', ':', '\\', 'n'])
         .filter(|&c| c != ' ')
         .collect();
@@ -101,25 +100,57 @@ pub fn generic_fixes(text: &str) -> String {
     re.replace_all(text, "\n").to_string()
 }
 
+fn cwd_or_exec() -> Result<PathBuf, ClewdrError> {
+    let cwd = std::env::current_dir().map_err(|_| ClewdrError::PathNotFound("cwd".to_string()))?;
+    let cwd_config = cwd.join(CONFIG_NAME);
+    if cwd_config.exists() {
+        return Ok(cwd);
+    }
+    let exec_path =
+        std::env::current_exe().map_err(|_| ClewdrError::PathNotFound("exec".to_string()))?;
+    let exec_dir = exec_path
+        .parent()
+        .ok_or_else(|| ClewdrError::PathNotFound("exec dir".to_string()))?
+        .to_path_buf();
+    let exec_config = exec_dir.join(CONFIG_NAME);
+    if exec_config.exists() {
+        return Ok(exec_dir);
+    }
+    Err(ClewdrError::PathNotFound(
+        "No config found in cwd or exec dir".to_string(),
+    ))
+}
+
 pub fn print_out_json(json: &impl serde::ser::Serialize, file_name: &str) {
-    let string = serde_json::to_string_pretty(json).unwrap_or_default();
-    let mut file = std::fs::File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(file_name)
-        .unwrap();
-    std::io::Write::write_all(&mut file, string.as_bytes()).unwrap();
+    let text = serde_json::to_string_pretty(json).unwrap_or_default();
+    print_out_text(&text, file_name);
 }
 
 pub fn print_out_text(text: &str, file_name: &str) {
-    let mut file = std::fs::File::options()
+    let Ok(dir) = cwd_or_exec() else {
+        error!("No config found in cwd or exec dir");
+        return;
+    };
+    let log_dir = dir.join("log");
+    if !log_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            error!("Failed to create log dir: {}\n", e);
+            return;
+        }
+    }
+    let file_name = log_dir.join(file_name);
+    let Ok(mut file) = std::fs::File::options()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(file_name)
-        .unwrap();
-    std::io::Write::write_all(&mut file, text.as_bytes()).unwrap();
+        .open(&file_name)
+    else {
+        error!("Failed to open file: {}", file_name.display());
+        return;
+    };
+    if let Err(e) = std::io::Write::write_all(&mut file, text.as_bytes()) {
+        error!("Failed to write to file: {}\n", e);
+    }
 }
 
 pub trait JsBool {
@@ -232,6 +263,10 @@ pub enum ClewdrError {
     UnknownStreamError(ClewdrTransformer, String),
     #[error("Input stream error: {0}")]
     EventSourceError(EventStreamError<rquest::Error>),
+    #[error("Config error: {0}")]
+    PathNotFound(String),
+    #[error("Invalid timestamp: {0}")]
+    TimestampError(i64),
 }
 
 pub const ENDPOINT: &str = "https://api.claude.ai";
@@ -299,18 +334,20 @@ pub async fn check_res_err(res: Response) -> Result<Response, ClewdrError> {
             .and_then(|m| serde_json::from_str::<Value>(m).ok())
             .and_then(|m| m["resetsAt"].as_i64())
         {
-            let reset_time = chrono::DateTime::from_timestamp(time, 0).unwrap().to_utc();
+            let reset_time = chrono::DateTime::from_timestamp(time, 0)
+                .ok_or(ClewdrError::TimestampError(time))?
+                .to_utc();
             let now = chrono::Utc::now();
             let diff = reset_time - now;
             let hours = diff.num_hours();
-            ret.message.as_mut().map(|msg| {
+            if let Some(msg) = ret.message.as_mut() {
                 let new_msg = format!(", expires in {hours} hours");
                 if let Some(str) = msg.as_str() {
                     *msg = format!("{str}{new_msg}").into();
                 } else {
                     *msg = new_msg.into();
                 }
-            });
+            }
             warn!("Rate limit exceeded, expires in {} hours", hours);
         }
     }
@@ -342,24 +379,23 @@ pub fn check_json_err(json: &Value) -> Value {
             if let Some(time) = err_api["message"]
                 .as_str()
                 .and_then(|m| serde_json::from_str::<Value>(m).ok())
-                .and_then(|m| m["resetAt"].as_str().map(|s| s.to_string()))
+                .and_then(|m| m["resetsAt"].as_i64())
             {
-                let reset_time = chrono::DateTime::parse_from_rfc3339(&time)
-                    .unwrap()
-                    .to_utc();
+                let Some(reset_time) = chrono::DateTime::from_timestamp(time, 0) else {
+                    error!("Failed to parse timestamp: {}", time);
+                    return ret;
+                };
                 let now = chrono::Utc::now();
                 let diff = reset_time - now;
                 let hours = diff.num_hours();
-                ret.as_object_mut()
-                    .and_then(|obj| obj.get_mut("message"))
-                    .map(|msg| {
-                        let new_msg = format!(", expires in {hours} hours");
-                        if let Some(str) = msg.as_str() {
-                            *msg = format!("{str}{new_msg}").into();
-                        } else {
-                            *msg = new_msg.into();
-                        }
-                    });
+                if let Some(msg) = ret.as_object_mut().and_then(|obj| obj.get_mut("message")) {
+                    let new_msg = format!(", expires in {hours} hours");
+                    if let Some(str) = msg.as_str() {
+                        *msg = format!("{str}{new_msg}").into();
+                    } else {
+                        *msg = new_msg.into();
+                    }
+                }
             }
         }
     }

@@ -16,6 +16,7 @@ use rquest::{
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{spawn, time::timeout};
+use tower_http::trace::TraceLayer;
 use tracing::{debug, error};
 
 use crate::{
@@ -35,6 +36,7 @@ impl RouterBuilder {
                 .route("/v1", options(api_options))
                 .route("/", options(api_options))
                 .fallback(api_fallback)
+                .layer(TraceLayer::new_for_http())
                 .with_state(state),
         }
     }
@@ -90,10 +92,13 @@ impl AppState {
     }
 
     pub fn update_cookie_from_res(&self, res: &Response) {
-        res.headers()
+        if let Some(s) = res
+            .headers()
             .get("set-cookie")
             .and_then(|h| h.to_str().ok())
-            .map(|s| self.update_cookies(s));
+        {
+            self.update_cookies(s)
+        }
     }
 
     pub fn update_cookies(&self, str: &str) {
@@ -159,7 +164,7 @@ impl AppState {
             }
             // set timeout callback
             let dur = if config.rproxy.is_empty() || config.rproxy == ENDPOINT {
-                15000 + my_state.timestamp.read().clone() - chrono::Utc::now().timestamp_millis()
+                15000 + *my_state.timestamp.read() - chrono::Utc::now().timestamp_millis()
             } else {
                 0
             };
@@ -176,13 +181,11 @@ impl AppState {
         }
     }
 
-    pub fn wait_for_change(&self) -> impl Future<Output = ()> {
-        async {
-            // if changing is true, wait for it to be false
-            let istate = self.0.clone();
-            while *istate.changing.read() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+    pub async fn wait_for_change(&self) {
+        // if changing is true, wait for it to be false
+        let istate = self.0.clone();
+        while *istate.changing.read() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -191,7 +194,7 @@ impl AppState {
         if config.current_cookie_info().is_none() {
             return false;
         }
-        let current_index = self.0.current_index.read().clone();
+        let current_index = *self.0.current_index.read();
         let mut config = self.0.config.write();
         let current_cookie = config.cookie_array.remove(current_index);
         config.cookie.clear();
@@ -207,7 +210,7 @@ impl AppState {
 
     async fn on_listen_catch(&self) -> Result<bool, ClewdrError> {
         let istate = self.0.clone();
-        let config = istate.config.read();
+        let config = istate.config.read().clone();
         let percentage = ((*istate.change_times.read() as f32)
             + config.cookie_index.saturating_sub(1) as f32)
             / (istate.total_times as f32)
@@ -219,8 +222,6 @@ impl AppState {
         }
         self.update_cookies(&config.cookie.to_string());
         let rproxy = config.rproxy.clone();
-        // drop the lock before the async call
-        drop(config);
         let end_point = if rproxy.is_empty() { ENDPOINT } else { &rproxy };
         let end_point = format!("{}/api/bootstrap", end_point);
         let res = SUPER_CLIENT
@@ -245,7 +246,7 @@ impl AppState {
             .find(|m| {
                 m["organization"]["capabilities"]
                     .as_array()
-                    .map_or(false, |c| c.iter().any(|c| c.as_str() == Some("chat")))
+                    .is_some_and(|c| c.iter().any(|c| c.as_str() == Some("chat")))
             })
             .and_then(|m| m["organization"].as_object())
             .ok_or(ClewdrError::UnexpectedNone)?;
@@ -277,31 +278,28 @@ impl AppState {
         *istate.cookie_model.write() = cookie_model.clone();
 
         // Check if cookie model is unknown (not in known models or in config's unknown models)
-        let mut config = istate.config.write();
-        if let Some(cookie_model) = &cookie_model {
-            if !MODELS.contains(&cookie_model.as_str())
-                && !config.unknown_models.contains(cookie_model)
-            {
-                config.unknown_models.push(cookie_model.clone());
-                config.save().unwrap_or_else(|e| {
-                    println!("Failed to save config: {}", e);
-                });
+        {
+            // drop lock by using a new scope
+            let mut config = istate.config.write();
+            if let Some(cookie_model) = &cookie_model {
+                if !MODELS.contains(&cookie_model.as_str())
+                    && !config.unknown_models.contains(cookie_model)
+                {
+                    config.unknown_models.push(cookie_model.clone());
+                    config.save().unwrap_or_else(|e| {
+                        println!("Failed to save config: {}", e);
+                    });
+                }
             }
-        }
 
-        let model_name = if is_pro.is_some() {
-            is_pro.clone().unwrap()
-        } else if cookie_model.is_some() {
-            cookie_model.clone().unwrap().clone()
-        } else {
-            String::new()
-        };
-        if let Some(current_cookie) = config.current_cookie_info() {
-            if !model_name.is_empty() {
-                current_cookie.model = Some(model_name);
-                config.save().unwrap_or_else(|e| {
-                    println!("Failed to save config: {}", e);
-                });
+            let model_name = is_pro.clone().or(cookie_model.clone()).unwrap_or_default();
+            if let Some(current_cookie) = config.current_cookie_info() {
+                if !model_name.is_empty() {
+                    current_cookie.model = Some(model_name);
+                    config.save().unwrap_or_else(|e| {
+                        println!("Failed to save config: {}", e);
+                    });
+                }
             }
         }
         if is_pro.is_none()
@@ -310,6 +308,7 @@ impl AppState {
         {
             return Ok(self.cookie_changer(None, None));
         }
+        let config = istate.config.read().clone();
         let index = if config.cookie_array.is_empty() {
             "".to_string()
         } else {
@@ -348,9 +347,9 @@ impl AppState {
             .as_str()
             .ok_or(ClewdrError::UnexpectedNone)?;
         let uuid_included = istate.uuid_org_array.read().clone();
-        let uuid_included = boot_acc_info["uuid"].as_str().map_or(false, |uuid| {
-            uuid_included.iter().any(|u| u.as_str() == uuid)
-        });
+        let uuid_included = boot_acc_info["uuid"]
+            .as_str()
+            .is_some_and(|uuid| uuid_included.iter().any(|u| u.as_str() == uuid));
         let api_disabled_reason = boot_acc_info.get("api_disabled_reason").js_bool();
         let api_disabled_until = boot_acc_info.get("api_disabled_until").js_bool();
         let completed_verification_at = bootstrap
@@ -368,10 +367,7 @@ impl AppState {
             } else {
                 UselessReason::Overlap
             };
-            println!(
-                "{}",
-                format!("Cookie is useless, reason: {}", reason.to_string().red())
-            );
+            println!("Cookie is useless, reason: {}", reason.to_string().red());
             return Ok(self.cookie_cleaner(reason));
         } else {
             istate.uuid_org_array.write().push(uuid.to_string());
@@ -379,7 +375,6 @@ impl AppState {
 
         // Bootstrap complete
         let rproxy = config.rproxy.clone();
-        drop(config);
         let end_point = if rproxy.is_empty() { ENDPOINT } else { &rproxy };
         let end_point = format!("{}/api/organizations", end_point);
         let res = SUPER_CLIENT
@@ -399,14 +394,14 @@ impl AppState {
                 a.iter().find(|v| {
                     v.get("capabilities")
                         .and_then(|c| c.as_array())
-                        .map_or(false, |c| c.iter().any(|c| c.as_str() == Some("chat")))
+                        .is_some_and(|c| c.iter().any(|c| c.as_str() == Some("chat")))
                 })
             })
             .ok_or(ClewdrError::UnexpectedNone)?;
 
-        acc_info.get("uuid").and_then(|u| u.as_str()).map(|u| {
+        if let Some(u) = acc_info.get("uuid").and_then(|u| u.as_str()) {
             *istate.uuid_org.write() = u.to_string();
-        });
+        }
         let active_flags = acc_info
             .get("active_flags")
             .and_then(|a| a.as_array())
@@ -414,16 +409,22 @@ impl AppState {
             .unwrap_or_default();
         if !active_flags.is_empty() {
             let now = chrono::Utc::now();
-            let formatted_flags = active_flags.iter().map(|f| {
-                let expire = f["expires_at"].as_str().unwrap(); // TODO: handle None
-                let expire = chrono::DateTime::parse_from_rfc3339(expire).unwrap();
+            let formatted_flags = active_flags.iter().map_while(|f| {
+                let Some(expire) = f["expires_at"].as_str() else {
+                    return None;
+                };
+                let Ok(expire) = chrono::DateTime::parse_from_rfc3339(expire) else {
+                    return None;
+                };
                 let diff = expire.to_utc() - now;
-                let r#type = f["type"].as_str().unwrap();
-                format!(
+                let Some(r#type) = f["type"].as_str() else {
+                    return None;
+                };
+                Some(format!(
                     "{}: expires in {} hours",
                     r#type.red(),
                     diff.num_hours().to_string().red()
-                )
+                ))
             });
             let banned = formatted_flags
                 .clone()
@@ -437,7 +438,7 @@ impl AppState {
             for flag in formatted_flags {
                 println!("{}", flag);
             }
-            let config = istate.config.read();
+            let config = istate.config.read().clone();
             let endpoint = if config.rproxy.is_empty() {
                 ENDPOINT
             } else {
@@ -462,9 +463,9 @@ impl AppState {
                                 format!("{}/flags/{}/dismiss", endpoint.clone(), t.clone());
                             let Ok(res) = SUPER_CLIENT
                                 .post(endpoint.clone())
-                                .header_append("Origin", ENDPOINT)
-                                .header_append("Referer", header_ref(""))
-                                .header_append("Cookie", cookies)
+                                .header_append(ORIGIN, ENDPOINT)
+                                .header_append(REFERER, header_ref(""))
+                                .header_append(COOKIE, cookies)
                                 .send()
                                 .await
                                 .inspect_err(|e| {
@@ -538,9 +539,9 @@ impl AppState {
             });
             let res = SUPER_CLIENT
                 .post(endpoint.clone())
-                .header_append("Origin", ENDPOINT)
-                .header_append("Referer", header_ref(""))
-                .header_append("Cookie", cookies)
+                .header_append(ORIGIN, ENDPOINT)
+                .header_append(REFERER, header_ref(""))
+                .header_append(COOKIE, cookies)
                 .json(&body)
                 .send()
                 .await?;
@@ -559,9 +560,9 @@ impl AppState {
         // mess the cookie a bit to see error message
         let res = SUPER_CLIENT
             .get(endpoint.clone())
-            .header_append("Origin", ENDPOINT)
-            .header_append("Referer", header_ref(""))
-            .header_append("Cookie", cookies)
+            .header_append(ORIGIN, ENDPOINT)
+            .header_append(REFERER, header_ref(""))
+            .header_append(COOKIE, cookies)
             .send()
             .await?;
         self.update_cookie_from_res(&res);
@@ -583,43 +584,45 @@ impl AppState {
 
     pub async fn on_listen(&self) -> bool {
         let istate = self.0.clone();
-        let mut config = istate.config.write();
-        if istate.first_login.read().clone() {
-            *istate.first_login.write() = false;
-            // get time now
-            let now = chrono::Utc::now().timestamp_millis();
-            *istate.timestamp.write() = now;
-            const TITLE: &str = formatc!(
-                "Clewdr v{} by {}",
-                env!("CARGO_PKG_VERSION"),
-                env!("CARGO_PKG_AUTHORS")
-            );
-            println!("{}", TITLE.blue());
-            println!("Listening on {}", config.address().green());
-            // println!("Config:\n{:?}", config);
-            // TODO: Local tunnel
-        }
-        if !config.cookie_array.is_empty() {
-            let current_cookie = config.current_cookie_info().unwrap().clone();
-            config.cookie = current_cookie.cookie.clone();
+        {
+            let mut config = istate.config.write();
+            if *istate.first_login.read() {
+                *istate.first_login.write() = false;
+                // get time now
+                let now = chrono::Utc::now().timestamp_millis();
+                *istate.timestamp.write() = now;
+                const TITLE: &str = formatc!(
+                    "Clewdr v{} by {}",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CARGO_PKG_AUTHORS")
+                );
+                println!("{}", TITLE.blue());
+                println!("Listening on {}", config.address().green());
+                // println!("Config:\n{:?}", config);
+                // TODO: Local tunnel
+            }
+            if !config.cookie_array.is_empty() {
+                let current_cookie = config.current_cookie_info().unwrap().clone();
+                config.cookie = current_cookie.cookie.clone();
 
-            *istate.change_times.write() += 1;
-            if istate.model.read().is_some()
-                && current_cookie.model.is_some()
-                && !current_cookie.is_pro()
-                && istate.model.read().as_ref().unwrap() != &current_cookie.model.unwrap()
-            {
-                return self.cookie_changer(Some(false), None);
+                *istate.change_times.write() += 1;
+                if istate.model.read().is_some()
+                    && current_cookie.model.is_some()
+                    && !current_cookie.is_pro()
+                    && istate.model.read().as_ref().unwrap() != &current_cookie.model.unwrap()
+                {
+                    return self.cookie_changer(Some(false), None);
+                }
             }
         }
-        drop(config);
+
         let res = self.on_listen_catch().await;
         match res {
             Ok(b) => b,
             Err(ClewdrError::JsError(v)) => {
                 if Some(json!("Invalid authorization")) == v.message {
                     error!("{}", "Invalid authorization".red());
-                    return self.cookie_cleaner(UselessReason::Invalid);
+                    self.cookie_cleaner(UselessReason::Invalid)
                 } else {
                     false
                 }

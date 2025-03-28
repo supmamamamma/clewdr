@@ -6,7 +6,7 @@ use tracing::warn;
 
 use crate::utils::{ClewdrError, ENDPOINT};
 
-const CONFIG_PATH: &str = "config.toml";
+pub const CONFIG_NAME: &str = "config.toml";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum UselessReason {
@@ -50,10 +50,16 @@ pub struct CookieInfo {
 }
 
 impl CookieInfo {
+    pub fn new(cookie: &str, model: Option<&str>) -> Self {
+        Self {
+            cookie: Cookie::from(cookie),
+            model: model.map(|m| m.to_string()),
+        }
+    }
     pub fn is_pro(&self) -> bool {
-        self.model.as_ref().map_or(false, |model| {
-            model.contains("claude") && model.contains("_pro")
-        })
+        self.model
+            .as_ref()
+            .is_some_and(|model| model.contains("claude") && model.contains("_pro"))
     }
 }
 
@@ -125,7 +131,7 @@ impl<'de> Deserialize<'de> for Cookie {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     // Cookie configurations
     pub cookie: Cookie,
@@ -164,7 +170,7 @@ pub struct Config {
     pub settings: Settings,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub renew_always: bool,
     pub retry_regenerate: bool,
@@ -187,11 +193,18 @@ pub struct Settings {
     pub superfetch: bool,
 }
 
+const PLACEHOLDER_COOKIE: &str = "sk-ant-sid01----------------------------SET_YOUR_COOKIE_HERE----------------------------------------AAAAAAAA";
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            cookie: Cookie::from("SET_YOUR_COOKIE_HERE"),
-            cookie_array: Vec::new(),
+            cookie: Cookie::from(
+                "sk-ant-sid01----------------------------SET_YOUR_COOKIE_HERE----------------------------------------AAAAAAAA",
+            ),
+            cookie_array: vec![
+                CookieInfo::new(PLACEHOLDER_COOKIE, None),
+                CookieInfo::new(PLACEHOLDER_COOKIE, Some("claude_pro")),
+            ],
             wasted_cookie: Vec::new(),
             unknown_models: Vec::new(),
             cookie_counter: 3,
@@ -243,16 +256,36 @@ impl Default for Settings {
 
 impl Config {
     pub fn load() -> Result<Self, ClewdrError> {
-        let file_string = std::fs::read_to_string(CONFIG_PATH);
+        let file_string = std::fs::read_to_string(CONFIG_NAME).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                let exec_path = std::env::current_exe()?;
+                let config_dir = exec_path.parent().ok_or(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Failed to get parent directory",
+                ))?;
+                let config_path = config_dir.join(CONFIG_NAME);
+                std::fs::read_to_string(config_path)
+            } else {
+                Err(e)
+            }
+        });
         match file_string {
             Ok(file_string) => {
                 let config: Config = toml::de::from_str(&file_string)?;
                 Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let exec_path = std::env::current_exe()?;
+                let config_dir = exec_path.parent().ok_or(ClewdrError::PathNotFound(
+                    "Failed to get parent directory".to_string(),
+                ))?;
                 let default_config = Config::default();
                 default_config.save()?;
-                println!("Default config file created at {}", CONFIG_PATH);
+                let canonical_path = std::fs::canonicalize(config_dir)?;
+                println!(
+                    "Default config file created at {}/config.toml",
+                    canonical_path.display()
+                );
                 println!("{}", "SET YOUR COOKIE HERE".green());
                 Ok(default_config)
             }
@@ -273,13 +306,18 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), ClewdrError> {
-        // Check if the config directory exists, if not create it
-        if !std::path::Path::new("config").exists() {
-            std::fs::create_dir("config")?;
+        let exec_path = std::env::current_exe()?;
+        let config_dir = exec_path.parent().ok_or(ClewdrError::PathNotFound(
+            "Failed to get parent directory".to_string(),
+        ))?;
+        // add file name to the path
+        if !config_dir.exists() {
+            std::fs::create_dir_all(config_dir)?;
         }
         // Save the config to a file
+        let config_path = config_dir.join(CONFIG_NAME);
         let config_string = toml::ser::to_string(self)?;
-        std::fs::write(CONFIG_PATH, config_string)?;
+        std::fs::write(config_path, config_string)?;
         Ok(())
     }
 

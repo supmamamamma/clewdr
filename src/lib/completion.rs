@@ -1,7 +1,7 @@
 use crate::{
     SUPER_CLIENT, TITLE,
     api::AppState,
-    stream::{ClewdrConfig, ClewdrTransformer},
+    stream::{ClewdrTransformer, StreamConfig},
     utils::{
         ClewdrError, ENDPOINT, TEST_MESSAGE, TIME_ZONE, check_res_err, header_ref, print_out_json,
         print_out_text,
@@ -135,14 +135,14 @@ impl Default for Message {
 
 pub async fn completion(
     State(state): State<AppState>,
-    header: HeaderMap,
+    _header: HeaderMap,
     Json(payload): Json<ClientRequestInfo>,
 ) -> Response {
     match state.try_completion(payload).await {
-        Ok(b) => return b.into_response(),
+        Ok(b) => b.into_response(),
         Err(e) => {
             info!("Error: {:?}", e);
-            return e.to_string().into_response();
+            e.to_string().into_response()
         }
     }
 }
@@ -171,7 +171,7 @@ impl AppState {
         if p.messages.is_empty() {
             return Err(ClewdrError::WrongCompletionFormat);
         }
-        print_out_json(&p, "log/0.messages.json");
+        print_out_json(&p, "0.messages.json");
         debug!("Messages processed");
         if !p.stream && p.messages.len() == 1 && p.messages.first() == Some(&TEST_MESSAGE) {
             return Ok(json!({
@@ -226,19 +226,19 @@ impl AppState {
                 == previous_prompts.first_system.map(|s| s.content)
             && current_prompts.first_user.map(|s| s.content)
                 == previous_prompts.first_user.map(|s| s.content);
-        let should_renew = s.config.read().settings.renew_always
+        let _should_renew = s.config.read().settings.renew_always
             || s.conv_uuid.read().is_none()
             || *s.prev_impersonated.read()
             || (!s.config.read().settings.renew_always && same_prompts)
             || same_char_diff_chat;
-        let retry_regen = s.config.read().settings.retry_regenerate
+        let _retry_regen = s.config.read().settings.retry_regenerate
             && same_prompts
             && s.conv_char.read().is_some();
         if !same_prompts {
             *s.prev_messages.write() = p.messages.clone();
         }
         debug!("Previous prompts processed");
-        let r#type;
+
         // TODO: handle api key
         //TODO: handle retry regeneration and not same prompts
         let uuid = s.conv_uuid.read().clone();
@@ -273,10 +273,10 @@ impl AppState {
         debug!("New conversation created");
         self.update_cookie_from_res(&api_res);
         check_res_err(api_res).await?;
-        r#type = RetryStrategy::Renew;
+        let r#type = RetryStrategy::Renew;
         // TODO: generate prompts
-        let (prompt, systems) = self.handle_messages(&p.messages, r#type);
-        print_out_text(&prompt, "log/1.prompt.txt");
+        let (prompt, _systems) = self.handle_messages(&p.messages, r#type);
+        print_out_text(&prompt, "1.prompt.txt");
         debug!("Prompt processed");
         let legacy = {
             let re = RegexBuilder::new(r"claude-([12]|instant)")
@@ -306,7 +306,7 @@ impl AppState {
             messages_api && re.is_match(&prompt)
         };
         debug!("Fusion mode: {}", fusion);
-        let wedge = "\r";
+        let _wedge = "\r";
         let stop_set = {
             let re = Regex::new(r"<\|stopSet *(\[.*?\]) *\|>").unwrap();
             re.find_iter(&prompt).nth(1)
@@ -351,10 +351,10 @@ impl AppState {
             // TODO: handle api key
             unimplemented!()
         };
-        print_out_text(&prompt, "log/2.xml.txt");
+        print_out_text(&prompt, "2.xml.txt");
         debug!("XML regex processed");
         let mut pr = self.pad_txt(prompt);
-        print_out_text(&pr, "log/3.pad.txt");
+        print_out_text(&pr, "3.pad.txt");
         debug!("Pad txt processed");
         // TODO: 我 log 你的吗，log 都写那么难看
         // panic!("log");
@@ -371,7 +371,7 @@ impl AppState {
                 "extracted_content": new_p,
                 "file_name": "paste.txt",
                 "file_type": "txt",
-                "file_size": new_p.as_bytes().len(),
+                "file_size": new_p.len(),
             }]);
             pr = if r#type == RetryStrategy::Renew {
                 s.config.read().prompt_experiment_first.clone()
@@ -397,14 +397,19 @@ impl AppState {
             "timezone": TIME_ZONE,
         });
         if s.config.read().settings.pass_params {
-            p.max_tokens
-                .map(|mt| body["max_tokens_to_sample"] = json!(mt));
-            p.top_k.map(|tk| body["top_k"] = json!(tk));
-            p.top_p.map(|tp| body["top_p"] = json!(tp));
+            if let Some(mt) = p.max_tokens {
+                body["max_tokens_to_sample"] = json!(mt)
+            }
+            if let Some(tk) = p.max_tokens {
+                body["top_k"] = json!(tk)
+            }
+            if let Some(tp) = p.top_p {
+                body["top_p"] = json!(tp)
+            }
             // body["stop_sequences"] = json!(stop);
             // body["temperature"] = json!(p.temperature);
         }
-        print_out_json(&body, "log/4.req.json");
+        print_out_json(&body, "4.req.json");
         debug!("Req body processed");
         let endpoint = if s.config.read().api_rproxy.is_empty() {
             ENDPOINT.to_string()
@@ -429,7 +434,7 @@ impl AppState {
             .await?;
         self.update_cookie_from_res(&api_res);
         let api_res = check_res_err(api_res).await?;
-        let trans = ClewdrTransformer::new(ClewdrConfig::new(
+        let trans = ClewdrTransformer::new(StreamConfig::new(
             TITLE,
             s.model
                 .read()
