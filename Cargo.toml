@@ -20,7 +20,10 @@ toml = "0.8"
 colored = "3"
 axum = { version = "0.8", features = ["json", "tracing", "tokio", "macros"] }
 regex = "1"
-tracing = "0.1"
+tracing = { version = "0.1", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 rand = "0.9"
 chrono = "0.4"
@@ -33,6 +36,6 @@ transform-stream = "0.3"
 bytes = "1"
 uuid = { version = "1.16.0", features = ["v4"] }
 regress = "0.10.3"
-fancy-regex = "0.14.0"
-eventsource-stream = "0.2.3"
-tower-http = { version = "0.6.2", features = ["trace"] }
+fancy-regex = "0.14"
+eventsource-stream = "0.2"
+tower-http = { version = "0.6", features = ["trace"] }

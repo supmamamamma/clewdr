@@ -8,8 +8,8 @@ use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use crate::{
-    api::AppState,
     completion::{Message, RetryStrategy},
+    state::AppState,
     utils::{REPLACEMENT, print_out_text},
 };
 

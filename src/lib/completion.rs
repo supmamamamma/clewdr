@@ -1,11 +1,10 @@
 use crate::{
     SUPER_CLIENT, TITLE,
-    api::AppState,
+    config::UselessReason,
+    error::{ClewdrError, check_res_err},
+    state::AppState,
     stream::{ClewdrTransformer, StreamConfig},
-    utils::{
-        ClewdrError, ENDPOINT, TEST_MESSAGE, TIME_ZONE, check_res_err, header_ref, print_out_json,
-        print_out_text,
-    },
+    utils::{ENDPOINT, TEST_MESSAGE, TIME_ZONE, header_ref, print_out_json, print_out_text},
 };
 use axum::{
     Json,
@@ -17,7 +16,7 @@ use eventsource_stream::EventStream;
 use regex::{Regex, RegexBuilder};
 use rquest::header::{ACCEPT, COOKIE, ORIGIN, REFERER};
 use serde_json::json;
-use tracing::{debug, info};
+use tracing::{debug, warn};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct ClientRequestInfo {
@@ -141,7 +140,7 @@ pub async fn completion(
     match state.try_completion(payload).await {
         Ok(b) => b.into_response(),
         Err(e) => {
-            info!("Error: {:?}", e);
+            warn!("Error: {:?}", e);
             e.to_string().into_response()
         }
     }
@@ -161,12 +160,9 @@ impl AppState {
             // TODO: more keys
             return Err(ClewdrError::NoValidKey);
         }
-        if !*s.changing.read()
-            && s.is_pro.read().is_none()
-            && *s.model.read() != *s.cookie_model.read()
-        {
-            self.cookie_changer(None, None);
-            self.wait_for_change().await;
+        if s.is_pro.read().is_none() && *s.model.read() != *s.cookie_model.read() {
+            self.cookie_shifter(UselessReason::Null);
+            return Err(ClewdrError::NoValidKey);
         }
         if p.messages.is_empty() {
             return Err(ClewdrError::WrongCompletionFormat);
@@ -433,7 +429,11 @@ impl AppState {
             .send()
             .await?;
         self.update_cookie_from_res(&api_res);
-        let api_res = check_res_err(api_res).await?;
+        let api_res = check_res_err(api_res).await.inspect_err(|e| {
+            if let ClewdrError::TooManyRequest(_, i) = e {
+                self.cookie_shifter(UselessReason::Temporary(*i));
+            }
+        })?;
         let trans = ClewdrTransformer::new(StreamConfig::new(
             TITLE,
             s.model

@@ -11,8 +11,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use transform_stream::{AsyncTryStream, Yielder};
 
-use crate::utils::{
-    ClewdrError, DANGER_CHARS, check_json_err, clean_json, generic_fixes, index_of_any,
+use crate::{
+    error::{ClewdrError, check_json_err},
+    utils::{DANGER_CHARS, clean_json, generic_fixes, index_of_any},
 };
 
 #[derive(Clone, Debug)]
@@ -214,7 +215,9 @@ impl ClewdrTransformer {
             .map(|c| c.to_string());
         if let Some(content) = completion {
             let new_completion = generic_fixes(&content);
-            if let Some(o) = parsed.as_object_mut() { o.insert("completion".to_string(), json!(new_completion)); }
+            if let Some(o) = parsed.as_object_mut() {
+                o.insert("completion".to_string(), json!(new_completion));
+            }
             self.ready_string += &new_completion;
             self.completes.push(new_completion.clone());
             delay = self.ready_string.ends_with(DANGER_CHARS.as_slice())
@@ -325,9 +328,9 @@ impl ClewdrTransformer {
             self.flush(&mut y).await;
             info!(
                 "Stream finished. Event received: {}, Input length: {}, Event emit: {}",
-                self.recv_events.load(Ordering::Acquire),
+                self.recv_events.load(Ordering::Acquire).to_string().blue(),
                 format!("{} Chars", self.recv_length).blue(),
-                self.emit_events.load(Ordering::Acquire)
+                self.emit_events.load(Ordering::Acquire).to_string().blue()
             );
             if self.hard_censor {
                 error!("Stream hard censored");
