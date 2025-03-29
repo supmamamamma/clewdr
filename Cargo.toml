@@ -39,3 +39,4 @@ regress = "0.10.3"
 fancy-regex = "0.14"
 eventsource-stream = "0.2"
 tower-http = { version = "0.6", features = ["trace"] }
+clap = { version = "4.5.34", features = ["derive"] }

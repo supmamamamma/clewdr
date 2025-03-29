@@ -2,3 +2,4 @@ target/
 .vscode/
 config.toml
 log/
+cookie.txt

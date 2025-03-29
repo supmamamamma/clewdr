@@ -2,9 +2,13 @@ use colored::Colorize;
 use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
-use crate::{error::ClewdrError, utils::ENDPOINT};
+use crate::{
+    Args,
+    error::ClewdrError,
+    utils::{ENDPOINT, cwd_or_exec},
+};
 
 pub const CONFIG_NAME: &str = "config.toml";
 
@@ -52,111 +56,6 @@ pub struct CookieInfo {
     #[serde(deserialize_with = "validate_reset")]
     #[serde(default)]
     pub reset_time: Option<i64>,
-}
-
-fn validate_reset<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Ok(value) = Option::<i64>::deserialize(deserializer) else {
-        return Ok(None);
-    };
-    if let Some(v) = value {
-        let Some(time) = chrono::DateTime::from_timestamp(v, 0) else {
-            warn!("Invalid reset time: {}", v);
-            return Ok(None);
-        };
-        let now = chrono::Utc::now();
-        if time < now {
-            info!("Cookie reset time is in the past: {}", time);
-            return Ok(None);
-        }
-        let remaining_time = time - now;
-        info!("Cookie reset in {} hours", remaining_time.num_hours());
-    }
-    Ok(value)
-}
-
-impl CookieInfo {
-    pub fn new(cookie: &str, model: Option<&str>, reset_time: Option<i64>) -> Self {
-        Self {
-            cookie: Cookie::from(cookie),
-            model: model.map(|m| m.to_string()),
-            reset_time,
-        }
-    }
-    pub fn is_pro(&self) -> bool {
-        self.model
-            .as_ref()
-            .is_some_and(|model| model.contains("claude") && model.contains("_pro"))
-    }
-}
-
-#[derive(Clone)]
-pub struct Cookie {
-    inner: String,
-}
-
-impl Cookie {
-    pub fn validate(&self) -> bool {
-        // Check if the cookie is valid
-        let re = regex::Regex::new(r"sk-ant-sid01-[0-9A-Za-z_-]{86}-[0-9A-Za-z_-]{6}AA").unwrap();
-        re.is_match(&self.inner)
-    }
-
-    pub fn clear(&mut self) {
-        // Clear the cookie
-        self.inner.clear();
-    }
-}
-
-impl From<&str> for Cookie {
-    fn from(cookie: &str) -> Self {
-        // only keep '=' '_' '-' and alphanumeric characters
-        let cookie = cookie
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '=' || *c == '_' || *c == '-')
-            .collect::<String>()
-            .trim_start_matches("sessionKey=")
-            .to_string();
-        let cookie = Self { inner: cookie };
-        if !cookie.validate() {
-            warn!("Invalid cookie format: {}", cookie);
-        }
-        cookie
-    }
-}
-
-impl Display for Cookie {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sessionKey={}", self.inner)
-    }
-}
-
-impl Debug for Cookie {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sessionKey={}", self.inner)
-    }
-}
-
-impl Serialize for Cookie {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let str = self.to_string();
-        serializer.serialize_str(&str)
-    }
-}
-
-impl<'de> Deserialize<'de> for Cookie {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Cookie::from(s.as_str()))
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -221,6 +120,113 @@ pub struct Settings {
 }
 
 const PLACEHOLDER_COOKIE: &str = "sk-ant-sid01----------------------------SET_YOUR_COOKIE_HERE----------------------------------------AAAAAAAA";
+
+fn validate_reset<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Ok(value) = Option::<i64>::deserialize(deserializer) else {
+        return Ok(None);
+    };
+    if let Some(v) = value {
+        let Some(time) = chrono::DateTime::from_timestamp(v, 0) else {
+            warn!("Invalid reset time: {}", v);
+            return Ok(None);
+        };
+        let now = chrono::Utc::now();
+        if time < now {
+            info!("Cookie reset time is in the past: {}", time);
+            return Ok(None);
+        }
+        let remaining_time = time - now;
+        info!("Cookie reset in {} hours", remaining_time.num_hours());
+    }
+    Ok(value)
+}
+
+impl CookieInfo {
+    pub fn new(cookie: &str, model: Option<&str>, reset_time: Option<i64>) -> Self {
+        Self {
+            cookie: Cookie::from(cookie),
+            model: model.map(|m| m.to_string()),
+            reset_time,
+        }
+    }
+    pub fn is_pro(&self) -> bool {
+        self.model
+            .as_ref()
+            .is_some_and(|model| model.contains("claude") && model.contains("_pro"))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Cookie {
+    inner: String,
+}
+
+impl Cookie {
+    pub fn validate(&self) -> bool {
+        // Check if the cookie is valid
+        let re = regex::Regex::new(r"sk-ant-sid01-[0-9A-Za-z_-]{86}-[0-9A-Za-z_-]{6}AA").unwrap();
+        re.is_match(&self.inner)
+    }
+
+    pub fn clear(&mut self) {
+        // Clear the cookie
+        self.inner.clear();
+    }
+}
+
+impl From<&str> for Cookie {
+    fn from(cookie: &str) -> Self {
+        // split off first '@' to keep compatibility with clewd
+        let cookie = cookie.split_once('@').map_or(cookie, |(_, c)| c);
+        // only keep '=' '_' '-' and alphanumeric characters
+        let cookie = cookie
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '=' || *c == '_' || *c == '-')
+            .collect::<String>()
+            .trim_start_matches("sessionKey=")
+            .to_string();
+        let cookie = Self { inner: cookie };
+        if !cookie.validate() {
+            warn!("Invalid cookie format: {}", cookie);
+        }
+        cookie
+    }
+}
+
+impl Display for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sessionKey={}", self.inner)
+    }
+}
+
+impl Debug for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sessionKey={}", self.inner)
+    }
+}
+
+impl Serialize for Cookie {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let str = self.to_string();
+        serializer.serialize_str(&str)
+    }
+}
+
+impl<'de> Deserialize<'de> for Cookie {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Cookie::from(s.as_str()))
+    }
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -295,7 +301,10 @@ impl Config {
         });
         match file_string {
             Ok(file_string) => {
-                let config: Config = toml::de::from_str(&file_string)?;
+                let mut config: Config = toml::de::from_str(&file_string)?;
+                config.load_from_arg_file();
+                config = config.validate();
+                config.save()?;
                 Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -303,18 +312,42 @@ impl Config {
                 let config_dir = exec_path.parent().ok_or(ClewdrError::PathNotFound(
                     "Failed to get parent directory".to_string(),
                 ))?;
-                let default_config = Config::default();
-                default_config.save()?;
+                let mut default_config = Config::default();
                 let canonical_path = std::fs::canonicalize(config_dir)?;
                 println!(
                     "Default config file created at {}/config.toml",
                     canonical_path.display()
                 );
                 println!("{}", "SET YOUR COOKIE HERE".green());
+                default_config.load_from_arg_file();
+                default_config = default_config.validate();
+                default_config.save()?;
                 Ok(default_config)
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    pub fn cookie_cleaner(&mut self, reason: UselessReason) {
+        if let UselessReason::Temporary(_) = reason {
+            warn!("Temporary useless cookie, not cleaning");
+            return;
+        }
+        if self.current_cookie_info().is_none() {
+            warn!("No current cookie info found");
+            return;
+        }
+        let Some(current_cookie) = self.delete_current_cookie() else {
+            warn!("No current cookie found");
+            return;
+        };
+        self.cookie.clear();
+        self.wasted_cookie
+            .push(UselessCookie::new(current_cookie.cookie, reason));
+        self.save().unwrap_or_else(|e| {
+            error!("Failed to save config: {}", e);
+        });
+        println!("Cleaning Cookie...");
     }
 
     pub fn endpoint(&self, path: &str) -> String {
@@ -335,6 +368,13 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), ClewdrError> {
+        let existing = cwd_or_exec();
+        if let Ok(existing) = existing {
+            let config_path = existing.join(CONFIG_NAME);
+            // overwrite the file if it exists
+            std::fs::write(config_path, toml::ser::to_string(self)?)?;
+            return Ok(());
+        }
         let exec_path = std::env::current_exe()?;
         let config_dir = exec_path.parent().ok_or(ClewdrError::PathNotFound(
             "Failed to get parent directory".to_string(),
@@ -395,7 +435,7 @@ impl Config {
         warn!("Rotating cookie to index {}", index.to_string().green());
     }
 
-    pub fn validate(mut self) -> Self {
+    fn validate(mut self) -> Self {
         if !self.cookie_array.is_empty() && self.cookie_index >= self.cookie_array.len() as i32 {
             self.cookie_index = rng().random_range(0..self.cookie_array.len() as i32);
         }
@@ -415,5 +455,45 @@ impl Config {
             .to_string();
         self.settings.padtxt = self.settings.padtxt.trim().to_string();
         self
+    }
+
+    fn load_from_arg_file(&mut self) {
+        // Load config from command line arguments
+        let args: Args = clap::Parser::parse();
+        let file = args.cookie_file;
+        let Some(file) = file else {
+            return;
+        };
+        let Ok(file_string) = std::fs::read_to_string(file) else {
+            return;
+        };
+        // one line per cookie
+        let mut new_array = file_string
+            .lines()
+            .filter_map(|line| {
+                let c = Cookie::from(line);
+                if !c.validate() {
+                    warn!("Invalid cookie format: {}", line);
+                    return None;
+                }
+                if self.cookie_array.iter().any(|x| x.cookie == c) {
+                    warn!("Duplicate cookie: {}", line);
+                    return None;
+                }
+                if self.wasted_cookie.iter().any(|x| x.cookie == c) {
+                    warn!("Wasted cookie: {}", line);
+                    return None;
+                }
+                Some(CookieInfo {
+                    cookie: c,
+                    model: None,
+                    reset_time: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        // remove duplicates
+        new_array.sort_unstable_by(|a, b| a.cookie.cmp(&b.cookie));
+        new_array.dedup_by(|a, b| a.cookie == b.cookie);
+        self.cookie_array.extend(new_array);
     }
 }

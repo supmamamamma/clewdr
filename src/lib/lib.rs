@@ -1,3 +1,4 @@
+use clap::Parser;
 use const_format::formatc;
 
 pub mod router;
@@ -16,3 +17,8 @@ pub const TITLE: &str = formatc!(
     env!("CARGO_PKG_VERSION"),
     env!("CARGO_PKG_AUTHORS")
 );
+
+#[derive(Parser, Debug)]
+pub struct Args {
+    pub cookie_file: Option<String>,
+}

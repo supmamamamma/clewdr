@@ -98,7 +98,7 @@ pub fn generic_fixes(text: &str) -> String {
     re.replace_all(text, "\n").to_string()
 }
 
-fn cwd_or_exec() -> Result<PathBuf, ClewdrError> {
+pub fn cwd_or_exec() -> Result<PathBuf, ClewdrError> {
     let cwd = std::env::current_dir().map_err(|_| ClewdrError::PathNotFound("cwd".to_string()))?;
     let cwd_config = cwd.join(CONFIG_NAME);
     if cwd_config.exists() {

@@ -17,7 +17,7 @@ async fn main() -> Result<(), ClewdrError> {
         .init();
     // use that subscriber to process traces emitted after this point
     println!("{}", *BANNER);
-    let config = Config::load()?.validate();
+    let config = Config::load()?;
     // TODO: load config from env
 
     // get time now

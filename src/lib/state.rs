@@ -14,7 +14,6 @@ use tracing::warn;
 
 use crate::client::AppendHeaders;
 use crate::client::SUPER_CLIENT;
-use crate::config::UselessCookie;
 use crate::config::UselessReason;
 use crate::error::ClewdrError;
 use crate::{completion::Message, config::Config, utils::ENDPOINT};
@@ -121,7 +120,7 @@ impl AppState {
             }
             _ => {
                 // if reason is not temporary, clean cookie
-                self.cookie_cleaner(reason);
+                config.cookie_cleaner(reason);
             }
         }
         // rotate the cookie
@@ -142,34 +141,10 @@ impl AppState {
         spawn(async move {
             self_clone.0.rotating.store(true, Ordering::Relaxed);
             sleep(dur).await;
-            self_clone.bootstrap().await;
             warn!("Cookie rotating complete");
             self_clone.0.rotating.store(false, Ordering::Relaxed);
+            self_clone.bootstrap().await;
         });
-    }
-
-    fn cookie_cleaner(&self, reason: UselessReason) {
-        if let UselessReason::Temporary(_) = reason {
-            warn!("Temporary useless cookie, not cleaning");
-            return;
-        }
-        let mut config = self.0.config.write();
-        if config.current_cookie_info().is_none() {
-            warn!("No current cookie info found");
-            return;
-        }
-        let Some(current_cookie) = config.delete_current_cookie() else {
-            warn!("No current cookie found");
-            return;
-        };
-        config.cookie.clear();
-        config
-            .wasted_cookie
-            .push(UselessCookie::new(current_cookie.cookie, reason));
-        config.save().unwrap_or_else(|e| {
-            error!("Failed to save config: {}", e);
-        });
-        println!("Cleaning Cookie...");
     }
 
     pub async fn delete_chat(&self, uuid: String) -> Result<(), ClewdrError> {

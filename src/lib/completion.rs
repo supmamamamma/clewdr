@@ -38,6 +38,7 @@ pub struct ClientRequestInfo {
     #[serde(default)]
     top_k: Option<i64>,
 }
+
 impl ClientRequestInfo {
     fn sanitize_client_request(mut self) -> ClientRequestInfo {
         if let Some(ref mut temp) = self.temperature {
@@ -401,16 +402,12 @@ impl AppState {
             if let Some(tp) = p.top_p {
                 body["top_p"] = json!(tp)
             }
-            // body["stop_sequences"] = json!(stop);
-            // body["temperature"] = json!(p.temperature);
+            body["stop_sequences"] = json!(stop);
+            body["temperature"] = json!(p.temperature);
         }
         print_out_json(&body, "4.req.json");
         debug!("Req body processed");
-        let endpoint = if s.config.read().api_rproxy.is_empty() {
-            ENDPOINT.to_string()
-        } else {
-            s.config.read().api_rproxy.clone()
-        };
+        let endpoint = s.config.read().endpoint("");
         let endpoint = format!(
             "{}/api/organizations/{}/chat_conversations/{}/completion",
             endpoint,
