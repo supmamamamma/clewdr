@@ -5,7 +5,7 @@ use crate::{
     error::{ClewdrError, check_res_err},
     state::AppState,
     stream::{ClewdrTransformer, StreamConfig},
-    utils::{ENDPOINT, TEST_MESSAGE, TIME_ZONE, print_out_json, print_out_text},
+    utils::{ENDPOINT, TEST_MESSAGE, TIME_ZONE, generic_fixes, print_out_json, print_out_text},
 };
 use axum::{
     Json,
@@ -57,8 +57,6 @@ pub struct Message {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub strip: Option<bool>,
-    #[serde(default)]
     pub jailbreak: Option<bool>,
     #[serde(default)]
     pub main: Option<bool>,
@@ -80,21 +78,6 @@ pub struct PromptsGroup {
     pub last_user: Option<Message>,
     pub last_system: Option<Message>,
     pub last_assistant: Option<Message>,
-}
-
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-pub enum RetryStrategy {
-    Api,
-    Renew,
-    RetryRegen,
-    CurrentRenew,
-    CurrentContinue,
-}
-
-impl RetryStrategy {
-    pub fn is_current(&self) -> bool {
-        matches!(self, Self::CurrentRenew | Self::CurrentContinue)
-    }
 }
 
 impl PromptsGroup {
@@ -123,7 +106,6 @@ impl Default for Message {
             content: "".to_string(),
             customname: None,
             name: None,
-            strip: None,
             jailbreak: None,
             main: None,
             discard: None,
@@ -150,7 +132,6 @@ pub async fn completion(
 
 impl AppState {
     async fn try_completion(&self, payload: ClientRequestInfo) -> Result<Response, ClewdrError> {
-        // TODO: 3rd key, API key, auth token, etc.
         let s = self.0.as_ref();
         let p = payload.sanitize_client_request();
         *s.model.write() = if s.is_pro.read().is_some() {
@@ -159,7 +140,6 @@ impl AppState {
             s.cookie_model.read().clone()
         };
         if s.uuid_org.read().is_empty() {
-            // TODO: more keys
             return Err(ClewdrError::NoValidKey);
         }
         if s.is_pro.read().is_none() && *s.model.read() != *s.cookie_model.read() {
@@ -199,7 +179,6 @@ impl AppState {
                 .to_string().into_response(),
             );
         }
-        //  TODO: warn sample config
         if !s.model_list.read().contains(&p.model) && !p.model.contains("claude-") {
             return Err(ClewdrError::InvalidModel(p.model));
         }
@@ -229,16 +208,10 @@ impl AppState {
             || *s.prev_impersonated.read()
             || (!s.config.read().settings.renew_always && same_prompts)
             || same_char_diff_chat;
-        let _retry_regen = s.config.read().settings.retry_regenerate
-            && same_prompts
-            && s.conv_char.read().is_some();
         if !same_prompts {
             *s.prev_messages.write() = p.messages.clone();
         }
         debug!("Previous prompts processed");
-
-        // TODO: handle api key
-        //TODO: handle retry regeneration and not same prompts
         let uuid = s.conv_uuid.read().clone();
         if let Some(uuid) = uuid {
             self.delete_chat(uuid).await?;
@@ -269,9 +242,7 @@ impl AppState {
         debug!("New conversation created");
         self.update_cookie_from_res(&api_res);
         check_res_err(api_res).await?;
-        let r#type = RetryStrategy::Renew;
-        // TODO: generate prompts
-        let (prompt, _systems) = self.handle_messages(&p.messages, r#type);
+        let prompt = self.handle_messages(&p.messages);
         print_out_text(&prompt, "1.prompt.txt");
         debug!("Prompt processed");
         let legacy = {
@@ -283,7 +254,6 @@ impl AppState {
         };
         debug!("Legacy model: {}", legacy);
         let messages_api = {
-            // TODO: third key
             let re = RegexBuilder::new(r"<\|completeAPI\|>")
                 .case_insensitive(true)
                 .build()
@@ -329,33 +299,14 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         debug!("Stop seq: {:?}", stop);
-        // TODO: Api key
-        let prompt = if s.config.read().settings.xml_plot {
-            self.xml_plot(
-                prompt,
-                Some(
-                    legacy
-                        && !s
-                            .model
-                            .read()
-                            .as_ref()
-                            .map(|m| m.contains("claude-2.1"))
-                            .unwrap_or_default(),
-                ),
-            )
-        } else {
-            // TODO: handle api key
-            unimplemented!()
-        };
+        let prompt = generic_fixes(&prompt).trim().to_string();
         print_out_text(&prompt, "2.xml.txt");
         debug!("XML regex processed");
         let mut pr = self.pad_txt(prompt);
         print_out_text(&pr, "3.pad.txt");
         debug!("Pad txt processed");
         // TODO: 我 log 你的吗，log 都写那么难看
-        // panic!("log");
         // finally, send the request
-        // TODO: handle retry regeneration
         let mut attach = json!([]);
         if s.config.read().settings.prompt_experiments {
             let splitted = pr
@@ -369,11 +320,7 @@ impl AppState {
                 "file_type": "txt",
                 "file_size": new_p.len(),
             }]);
-            pr = if r#type == RetryStrategy::Renew {
-                s.config.read().prompt_experiment_first.clone()
-            } else {
-                s.config.read().prompt_experiment_next.clone()
-            };
+            pr = s.config.read().prompt_experiment_first.clone();
             if splitted.len() > 1 {
                 pr += splitted[1].as_str();
             }
@@ -388,7 +335,6 @@ impl AppState {
                 None
             },
             "rendering_mode": "raw",
-            // TODO: pass parameters
             "prompt": pr,
             "timezone": TIME_ZONE,
         });

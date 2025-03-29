@@ -1,35 +1,17 @@
-use std::{borrow::Cow, fmt::Write, sync::LazyLock};
-
 use claude_tokenizer::count_tokens;
-use colored::Colorize;
-use fancy_regex::Regex;
 use rand::{Rng, RngCore};
-use serde_json::Value;
-use tracing::{debug, error, warn};
+use regex::Regex;
+use std::fmt::Write;
+use tracing::error;
 
 use crate::{
-    completion::{Message, RetryStrategy},
+    completion::Message,
     state::AppState,
     utils::{REPLACEMENT, print_out_text},
 };
 
 impl AppState {
-    pub fn handle_messages(
-        &self,
-        messages: &[Message],
-        strategy: RetryStrategy,
-    ) -> (String, Vec<String>) {
-        let re_scenario = fancy_regex::RegexBuilder::new(
-            r"^\[Circumstances and context of the dialogue: ([\s\S]+?)\.?\]$",
-        )
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-        let re_personality =
-            fancy_regex::RegexBuilder::new(r"^\[([\s\S]+?)'s personality: ([\s\S]+?)\]$")
-                .case_insensitive(true)
-                .build()
-                .unwrap();
+    pub fn handle_messages(&self, messages: &[Message]) -> String {
         let real_logs = messages
             .iter()
             .filter(|m| ["assistant", "user"].contains(&m.role.as_str()))
@@ -52,29 +34,22 @@ impl AppState {
                     && !REPLACEMENT.contains_key(name),
             )
         }
-        let s = self.0.as_ref();
-        if !s.config.read().settings.xml_plot {
-            // TODO: Non-xml plot
-            // for (prev, next) in merged_logs.iter().zip(merged_logs.iter().skip(1)) {}
-        }
-        let mut last_assistant = real_logs
-            .iter()
-            .rfind(|m| m.role == "assistant" && m.merged.unwrap_or_default())
-            .cloned()
-            .cloned();
-        if s.config.read().settings.strip_assistant {
-            if let Some(m) = last_assistant.as_mut() {
-                m.strip = Some(true);
-            }
-        }
-        let mut last_user = real_logs
-            .iter()
-            .rfind(|m| m.role == "user" && m.merged.unwrap_or_default())
-            .cloned()
-            .cloned();
-        if s.config.read().settings.strip_human {
-            if let Some(m) = last_user.as_mut() {
-                m.strip = Some(true);
+        for i in 1..merged_logs.len() {
+            let (prev, next) = merged_logs.split_at_mut(i);
+            let prev = prev.last_mut().unwrap();
+            let next = next.first_mut().unwrap();
+            if prev.name.is_some() && prev.name == next.name {
+                write!(prev.content, "\n{}", next.content).unwrap();
+                next.merged = Some(true);
+            } else if next.role != "system" {
+                if next.role == prev.role {
+                    write!(prev.content, "\n{}", next.content).unwrap();
+                    next.merged = Some(true);
+                }
+            } else {
+                // merge system messages
+                write!(prev.content, "\n{}", next.content).unwrap();
+                next.merged = Some(true);
             }
         }
         let mut system_messages = messages
@@ -83,44 +58,7 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let sys_messages_len = system_messages.len();
-        let re = fancy_regex::RegexBuilder::new(r"(?m){{scenario}}")
-            .case_insensitive(true)
-            .build()
-            .unwrap();
-        let re1 = fancy_regex::RegexBuilder::new(r"(?m){{char}}")
-            .case_insensitive(true)
-            .build()
-            .unwrap();
-        let re2 = fancy_regex::RegexBuilder::new(r"(?m){{personality}}")
-            .case_insensitive(true)
-            .build()
-            .unwrap();
         for (i, m) in system_messages.iter_mut().enumerate() {
-            if let Some(scenario) = re_scenario
-                .captures(&m.content)
-                .ok()
-                .and_then(|c| c)
-                .and_then(|c| c.get(1))
-                .map(|c| c.as_str())
-            {
-                m.content = re
-                    .replace_all(&s.config.read().scenario_format, scenario)
-                    .to_string();
-                m.scenario = Some(true);
-            }
-            let personalities = re_personality.captures(&m.content).ok().and_then(|c| c);
-            if personalities.is_some() && personalities.as_ref().unwrap().len() == 3 {
-                let new_content = re1
-                    .replace_all(
-                        &s.config.read().personality_format,
-                        &personalities.as_ref().unwrap()[1],
-                    )
-                    .to_string();
-                m.content = re2
-                    .replace_all(&new_content, &personalities.unwrap()[2])
-                    .to_string();
-                m.personality = Some(true);
-            }
             m.main = if i == 0 { Some(true) } else { Some(false) };
             m.jailbreak = if i == sys_messages_len - 1 {
                 Some(true)
@@ -131,18 +69,12 @@ impl AppState {
                 m.discard = Some(true);
             }
         }
-        // TODO: All sample
-        // TODO: Non sample
-        let systems: Vec<String> = Vec::new();
-        if strategy.is_current() {
-            // TODO: current chat
-        }
         let prompt = messages
             .iter()
             .map_while(|m| self.generate_prompt(m))
             .collect::<Vec<_>>()
             .join("\n\n"); // TODO: Non xml plot is not
-        (prompt, systems)
+        prompt
     }
 
     pub fn generate_prompt(&self, messages: &Message) -> Option<String> {
@@ -152,212 +84,35 @@ impl AppState {
         {
             return None;
         }
-        let s = self.0.as_ref();
-        if s.config.read().settings.xml_plot {
-            let prefix = if *messages.customname.as_ref().unwrap_or(&false) {
-                messages.role.clone()
-                    + ": "
-                    + messages
-                        .name
-                        .clone()
-                        .unwrap_or_default()
-                        .replace("_", " ")
-                        .as_str()
-                    + ": "
-            } else if messages.role != "system"
-                || messages
-                    .name
-                    .clone()
-                    .map(|n| !n.is_empty())
-                    .unwrap_or_default()
-            {
-                let replace = messages
-                    .name
-                    .clone()
-                    .and_then(|n| REPLACEMENT.get(n.as_str()))
-                    .or(REPLACEMENT.get(messages.role.as_str()))
-                    .cloned()
-                    .unwrap_or(&messages.role);
-                format!("{}: ", replace)
-            } else {
-                let replace = REPLACEMENT
-                    .get(messages.role.as_str())
-                    .cloned()
-                    .unwrap_or(&messages.role)
-                    .to_string();
-                format!("xmlPlot: {}", replace)
-            };
-            return Some(format!(
-                "{}{}",
-                if messages.strip.unwrap_or_default() {
-                    String::new()
-                } else {
-                    prefix
-                },
-                messages.content
-            ));
-        } else {
-            // TODO: Non-xml plot
-        }
-        None
-    }
-
-    pub fn xml_plot(&self, content: String, non_sys: Option<bool>) -> String {
-        debug!("XML Plotting");
-        let non_sys = non_sys.unwrap_or_default();
-        self.0.regex_log.write().clear();
-        let content = self.xml_plot_regex(content, 1);
-        debug!("XML 1st round regex completed");
-        let merge_tag = MergeTag {
-            all: !content.contains("<|Merge Disable|>"),
-            system: !content.contains("<|Merge System Disable|>"),
-            human: !content.contains("<|Merge Human Disable|>"),
-            assistant: !content.contains("<|Merge Assistant Disable|>"),
-        };
-        let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
-        debug!("XML 1st merged");
-        let mut split_content = {
-            static RE: LazyLock<Regex> =
-                LazyLock::new(|| Regex::new(r"\n\n(?=Assistant:|Human:)").unwrap());
-            RE.split(&content)
-                .map_while(|s| s.map(|s| s.to_string()).ok())
-                .collect::<Vec<_>>()
-        };
-        debug!("XML splitted");
-        static RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
-        while let Some(caps) = RE.captures(&content).ok().and_then(|o| o) {
-            let index = split_content.len() as isize - caps[1].parse::<isize>().unwrap() - 1;
-            if index < 0 {
-                warn!("{}", "Invalid index".yellow());
-            } else {
-                split_content[index as usize] +=
-                    &("\n\n".to_string() + caps[2].to_string().as_str());
-                content = content.replace(caps[0].to_string().as_str(), "");
-            }
-        }
-        debug!("XML Split handled");
-        let content = split_content.join("\n\n");
-        static RE_: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?s)<@(\d+)>(.*?)</@\1>").unwrap());
-        let content = RE_.replace_all(&content, "").to_string();
-        let content = self.xml_plot_regex(content, 2);
-        let mut content = xml_plot_merge(&content, &merge_tag, non_sys);
-        debug!("XML 2nd merged");
-        let split_human = content
-            .split("\n\nHuman:")
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
-        // TODO: handle api key
-        if split_human.len() > 2
-            && split_content
-                .last()
-                .unwrap()
-                .contains("<|Plain Prompt Enable|>")
-            && !content.contains("\n\nPlainPrompt:")
+        let prefix = if *messages.customname.as_ref().unwrap_or(&false) {
+            messages
+                .name
+                .clone()
+                .map(|n| n.replace("_", "") + ": ")
+                .unwrap_or_default()
+        } else if messages.role != "system"
+            || messages
+                .name
+                .clone()
+                .map(|n| !n.is_empty())
+                .unwrap_or_default()
         {
-            let split = split_human
-                .iter()
-                .rev()
-                .skip(1)
-                .rev()
+            let replace = messages
+                .name
+                .clone()
+                .and_then(|n| REPLACEMENT.get(n.as_str()))
+                .or(REPLACEMENT.get(messages.role.as_str()))
                 .cloned()
-                .collect::<Vec<_>>()
-                .join("\n\nHuman:");
-            static RE: LazyLock<Regex> =
-                LazyLock::new(|| Regex::new(r"\n\nHuman: *PlainPrompt:").unwrap());
-            content = split.clone()
-                + "\n\nPlainPrompt:"
-                + RE.replace_all(split.as_str(), "\n\nPlainPrompt:")
-                    .to_string()
-                    .as_str();
-        }
-        let c = self.xml_plot_regex(content, 3);
-        debug!("XML 3rd round");
-        static RE1: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?m)<regex( +order *= *\d)?>.*?</regex>").unwrap());
-        static RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)\r\n|\r").unwrap());
-        static RE3: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|curtail\|>\s*").unwrap());
-        static RE4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|join\|>\s*").unwrap());
-        static RE5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|space\|>\s*").unwrap());
-        static RE6: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"\s*\n\n(H(uman)?|A(ssistant)?): +").unwrap());
-        static RE7: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<\|(\\.*?)\|>").unwrap());
-        let replacer = |caps: &fancy_regex::Captures| {
-            let re = regex::Regex::new(r##"\\?""##).unwrap();
-            let Some(p1) = caps.get(1).map(|o| o.as_str()) else {
-                return caps[0].to_string();
-            };
-            let p1 = re.replace_all(p1, "\\\"").to_string();
-            let Ok(json) = serde_json::from_str::<Value>(p1.as_str()) else {
-                return caps[0].to_string();
-            };
-            json.to_string()
-        };
-        let content = RE1.replace_all(c.as_str(), "").to_string();
-        let content = RE2.replace_all(content.as_str(), "\n").to_string();
-        let content = RE3.replace_all(content.as_str(), "\n").to_string();
-        let content = RE4.replace_all(content.as_str(), "").to_string();
-        let content = RE5.replace_all(content.as_str(), " ").to_string();
-        let content = RE6.replace_all(content.as_str(), "\n\n$1: ").to_string();
-        let content = RE7.replace_all(content.as_str(), replacer).to_string();
-        debug!("XML empty replaced");
-        // TODO: api key logic
-        static RE8: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"\s*<\|(?!padtxt).*?\|>\s*").unwrap());
-        static RE9: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*<\|.*?\|>\s*").unwrap());
-        static RE10: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^Human: *|\n\nAssistant: *$").unwrap());
-        static RE11: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?<=\n)\n(?=\n)").unwrap());
-        let c = if !self.0.config.read().settings.padtxt.is_empty() {
-            RE8.replace_all(content.as_str(), "\n\n").to_string()
+                .unwrap_or(&messages.role);
+            format!("{}: ", replace)
         } else {
-            RE9.replace_all(content.as_str(), "\n\n").to_string()
-        }
-        .trim()
-        .to_string();
-        let c = RE10.replace_all(c.as_str(), "").to_string();
-        RE11.replace_all(c.as_str(), "").to_string()
-    }
-
-    fn xml_plot_regex(&self, mut content: String, order: i64) -> String {
-        let re = fancy_regex::Regex::new(
-            format!(
-                "(:?)<regex(?: +order *= *{}){}> *\"(/?)(.*)\\1(.*?)\" *: *\"(.*?)\" *</regex>",
-                order,
-                if order == 2 { "?" } else { "" }
-            )
-            .as_str(),
-        )
-        .unwrap();
-        let res = re
-            .find_iter(content.as_ref())
-            .map_while(|m| m.map(|m| m.as_str().to_string()).ok())
-            .collect::<Vec<_>>();
-        let re = fancy_regex::Regex::new(
-            r##"<regex(?: +order *= *\d)?> *"(/?)(.*)\1(.*?)" *: *"(.*?)" *</regex>"##,
-        )
-        .unwrap();
-        for m in res {
-            if let Some(caps) = re.captures(m.as_str()).ok().and_then(|o| o) {
-                if caps.len() < 5 {
-                    warn!("{}", "Regex capture group is less than 5".yellow());
-                    continue;
-                }
-                *self.0.regex_log.write() += "\n";
-                let ecma_re = caps[2].to_string();
-                let flags = caps[3].to_string();
-                let to = caps[4].to_string();
-                let Ok(ecma_re) = regress::Regex::with_flags(&ecma_re, flags.as_str()) else {
-                    warn!("{}", "ECMA regex is invalid".yellow());
-                    continue;
-                };
-                debug!("ECMA Regex: {:?}", ecma_re);
-                let to = to.replace("\\?\"", "\\\"')}\"");
-                content = ecma_re.replace_all(content.as_ref(), to.as_str()).into();
-            }
-        }
-        content
+            REPLACEMENT
+                .get(messages.role.as_str())
+                .cloned()
+                .unwrap_or(&messages.role)
+                .to_string()
+        };
+        return Some(format!("{}{}", prefix, messages.content.trim()));
     }
 
     pub fn pad_txt(&self, mut content: String) -> String {
@@ -398,10 +153,10 @@ impl AppState {
             }
         };
         let placeholder_tokens = count_tokens(placeholder.as_str()).unwrap_or_default();
-        let re = fancy_regex::Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
+        let re = Regex::new(r"<\|padtxt.*?(\d+)t.*?\|>").unwrap();
         for cs in re
             .captures_iter(content.clone().as_str())
-            .map_while(|c| c.ok().map(|c| c.iter().collect::<Vec<_>>()))
+            .map(|c| c.iter().collect::<Vec<_>>())
         {
             let (Some(Some(m1)), Some(Some(m2))) = (cs.get(1), cs.get(2)) else {
                 continue;
@@ -415,9 +170,9 @@ impl AppState {
             );
         }
         print_out_text(&content, "2.1.placeholder.txt");
-        let re = fancy_regex::Regex::new(r"<\|padtxt off.*?\|>").unwrap();
-        if re.is_match(content.as_str()).unwrap_or_default() {
-            let re = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
+        let re = Regex::new(r"<\|padtxt off.*?\|>").unwrap();
+        if re.is_match(content.as_str()) {
+            let re = Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
             return re.replace_all(content.as_str(), "\n\n").to_string();
         }
         let padding = placeholder.repeat(
@@ -429,173 +184,14 @@ impl AppState {
                 *extra_tokens
             }) / placeholder_tokens,
         );
-        let re = fancy_regex::Regex::new(r"<\|padtxt.*?\|>").unwrap();
-        if re.is_match(content.as_str()).unwrap_or_default() {
+        let re = Regex::new(r"<\|padtxt.*?\|>").unwrap();
+        if re.is_match(content.as_str()) {
             content = re.replace(content.as_str(), padding).to_string();
-            let re2 = fancy_regex::Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
+            let re2 = Regex::new(r"\s*<\|padtxt.*?\|>\s*").unwrap();
             content = re2.replace_all(content.as_str(), "\n\n").to_string();
         } else {
-            // TODO: api key logic
             content = format!("{}\n\n\n{}", padding, content.trim());
         }
         content
-    }
-
-    pub fn handle_full_colon(
-        &self,
-        mut prompt: String,
-        legacy: bool,
-        fusion: bool,
-        wedge: String,
-    ) -> String {
-        if !self.0.config.read().settings.full_colon {
-            return prompt;
-        }
-        if !legacy {
-            let re = if fusion {
-                fancy_regex::Regex::new(r"(?s)\n(?!\nAssistant:\s*$)(?=\n(Human|Assistant):)")
-                    .unwrap()
-            } else {
-                fancy_regex::Regex::new(r"\n(?=\n(Human|Assistant):)").unwrap()
-            };
-            prompt = re
-                .replace_all(prompt.as_str(), format!("\n{}", wedge))
-                .to_string();
-        } else {
-            let re = if fusion {
-                fancy_regex::Regex::new(r"(?s)(?<=\n\nAssistant):(?!\s*$)|(?<=\n\nHuman):").unwrap()
-            } else {
-                fancy_regex::Regex::new(r"(?<=\n\n(Human|Assistant)):").unwrap()
-            };
-            prompt = re.replace_all(prompt.as_str(), "﹕").to_string();
-        }
-        prompt
-    }
-}
-
-trait Replace<'h> {
-    fn replace_all(&self, content: &'h str, to: &str) -> Cow<'h, str>;
-}
-
-impl<'h> Replace<'h> for regress::Regex {
-    fn replace_all(&self, content: &'h str, to: &str) -> Cow<'h, str> {
-        let mut new_content = Cow::from(content);
-        // find capture groups in to
-        let re = regex::Regex::new(r"\$([1-9]+\d*)").unwrap();
-        let to = to.to_string();
-        let captures = re
-            .find_iter(to.as_str())
-            .map_while(|m| m.as_str()[1..].parse::<usize>().ok())
-            .collect::<Vec<_>>();
-        // find all matches in content
-        let mut offset: isize = 0;
-        for m in self.find_iter(content) {
-            let range_len = m.range().end - m.range().start;
-            let range = (m.range().start as isize + offset) as usize
-                ..(m.range().end as isize + offset) as usize;
-            let grp = m.captures;
-            if grp.is_empty() {
-                continue;
-            }
-            let mut to = to.clone();
-            for cap in &captures {
-                if cap == &0 {
-                    continue;
-                }
-                if let Some(capture) = grp.get(*cap - 1).and_then(|o| o.clone()) {
-                    let capture_str = content[capture].to_string();
-                    to = to.replace(&format!("${}", cap), &capture_str);
-                }
-            }
-            new_content.to_mut().replace_range(range.clone(), &to);
-            offset += to.len() as isize - range_len as isize;
-        }
-        new_content
-    }
-}
-
-fn xml_plot_merge(content: &str, merge_tag: &MergeTag, non_sys: bool) -> String {
-    let re_check = regex::Regex::new(r"(\n\n|^\s*)xmlPlot:\s*").unwrap();
-    let mut content = content.to_string();
-    debug!("XML Plot Merge: started, non_sys: {}", non_sys);
-    if re_check.is_match(&content) {
-        if !non_sys {
-            let re_remove = Regex::new(
-                r"(?s)(\n\n|^\s*)xmlPlot:\s*", // TODO: not correct
-            )
-            .unwrap();
-            let re_first_human_assistant = Regex::new(r"(?s)(\n\n(Human|Assistant):.)").unwrap();
-            let border = re_first_human_assistant
-                .find(&content)
-                .ok()
-                .and_then(|o| o)
-                .map(|o| o.range().start)
-                .unwrap_or(content.len());
-            let slice_after = &content.split_off(border);
-            content = re_remove.replace_all(&content, "$1").to_string() + slice_after;
-            debug!("XML Plot Merge: removed for non-sys");
-        }
-        let re = regex::Regex::new(r"(\n\n|^\s*)xmlPlot: *").unwrap();
-        let to = if merge_tag.system && merge_tag.human && merge_tag.all {
-            "\n\nHuman: "
-        } else {
-            "$1"
-        };
-        content = re.replace_all(&content, to).to_string();
-        debug!("XML Plot Merge: replaced");
-    }
-
-    if merge_tag.all && merge_tag.human {
-        let re =
-            fancy_regex::Regex::new(r"(?s)(?:\n\n|^\s*)Human:(.*?(?:\n\nAssistant:|$))").unwrap();
-        let replacer = |caps: &fancy_regex::Captures| {
-            let re = fancy_regex::Regex::new(r"\n\nHuman:\s*").unwrap();
-            if caps.len() < 2 {
-                return caps[0].to_string();
-            }
-            let p1 = caps.get(1).unwrap().as_str();
-            let p1 = re.replace_all(p1, "\n\n");
-            format!("\n\nHuman:{}", p1)
-        };
-        content = re.replace_all(&content, replacer).to_string();
-    }
-    debug!("XML Plot Merge: human merged");
-    if merge_tag.all && merge_tag.assistant {
-        let re = fancy_regex::RegexBuilder::new(r"(?s)\n\nAssistant:(.*?(?:\n\nHuman:|$))")
-            .build()
-            .unwrap();
-        let replacer = |caps: &fancy_regex::Captures| {
-            let re = fancy_regex::Regex::new(r"\n\nAssistant:\s*").unwrap();
-            if caps.len() < 2 {
-                return caps[0].to_string();
-            }
-            let p1 = caps.get(1).unwrap().as_str();
-            let p1 = re.replace_all(p1, "\n\n");
-            format!("\n\nAssistant:{}", p1)
-        };
-        content = re.replace_all(&content, replacer).to_string();
-    }
-    debug!("XML Plot Merge: assistant merged");
-    content
-}
-
-struct MergeTag {
-    all: bool,
-    system: bool,
-    human: bool,
-    assistant: bool,
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_replace_all() {
-        let re = regress::Regex::with_flags(r"(\d+)", "gs").unwrap();
-        let content = "123 456 789";
-        let to = "$1kkk";
-        let result = re.replace_all(content, to);
-        assert_eq!(result, "123kkk 456kkk 789kkk");
     }
 }

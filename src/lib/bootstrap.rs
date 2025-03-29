@@ -257,68 +257,6 @@ impl AppState {
             for flag in formatted_flags {
                 println!("{}", flag);
             }
-            let config = istate.config.read().clone();
-            let endpoint = if config.rproxy.is_empty() {
-                ENDPOINT
-            } else {
-                &config.rproxy
-            };
-            let endpoint = format!("{}/api/organizations/{}", endpoint, istate.uuid_org.read());
-            if config.settings.clear_flags && !active_flags.is_empty() {
-                let fut = active_flags
-                    .iter()
-                    .map_while(|f| f.get("type").and_then(|t| t.as_str()))
-                    .filter(|&t| t != "consumer_banned" && t != "consumer_restricted_mode")
-                    // .map(|t|())
-                    .map(|t| {
-                        let t = t.to_string();
-                        let endpoint = endpoint.clone();
-                        async move {
-                            let endpoint =
-                                format!("{}/flags/{}/dismiss", endpoint.clone(), t.clone());
-                            let Ok(cookies) = self.header_cookie() else {
-                                return;
-                            };
-                            let Ok(res) = SUPER_CLIENT
-                                .post(endpoint.clone())
-                                .append_headers("", cookies)
-                                .send()
-                                .await
-                                .inspect_err(|e| {
-                                    error!("Failed to connect to {}: {}", endpoint, e);
-                                })
-                            else {
-                                return;
-                            };
-                            self.update_cookie_from_res(&res);
-                            let json = match res.json::<Value>().await {
-                                Ok(json) => json,
-                                Err(e) => {
-                                    error!("Failed to parse response json: {}", e);
-                                    return;
-                                }
-                            };
-                            let json_error = json.get("error");
-                            let error_message = json_error.and_then(|e| e.get("message"));
-                            let error_type = json_error.and_then(|e| e.get("type"));
-                            let json_detail = json.get("detail");
-                            let message = if json_error.is_some() {
-                                error_message
-                                    .or(json_detail)
-                                    .or(error_type)
-                                    .and_then(|m| m.as_str())
-                                    .unwrap_or_default()
-                                    .red()
-                                    .to_string()
-                            } else {
-                                "OK".green().to_string()
-                            };
-                            println!("{}: {}", t.blue(), message);
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                futures::future::join_all(fut).await;
-            }
             if banned {
                 println!(
                     "{}",
@@ -380,7 +318,6 @@ impl AppState {
         self.update_cookie_from_res(&res);
         let ret_json = res.json::<Value>().await?;
         let cons = ret_json.as_array().cloned().unwrap_or_default();
-        // TODO: Do I need a pool to delete the conversations?
         let futures = cons
             .iter()
             .filter_map(|c| {

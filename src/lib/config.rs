@@ -89,8 +89,6 @@ pub struct Config {
     // Prompt templates
     pub prompt_experiment_first: String,
     pub prompt_experiment_next: String,
-    pub personality_format: String,
-    pub scenario_format: String,
 
     // Nested settings section
     #[serde(default)]
@@ -100,21 +98,13 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub renew_always: bool,
-    pub retry_regenerate: bool,
     pub prompt_experiments: bool,
     pub system_experiments: bool,
     pub prevent_imperson: bool,
-    pub all_samples: bool,
-    pub no_samples: bool,
-    pub strip_assistant: bool,
-    pub strip_human: bool,
     pub pass_params: bool,
-    pub clear_flags: bool,
     pub preserve_chats: bool,
     pub log_messages: bool,
-    pub full_colon: bool,
     pub padtxt: String,
-    pub xml_plot: bool,
     pub skip_restricted: bool,
     pub artifacts: bool,
 }
@@ -252,8 +242,6 @@ impl Default for Config {
             placeholder_byte: String::new(),
             prompt_experiment_first: String::new(),
             prompt_experiment_next: String::new(),
-            personality_format: "{{char}}'s personality: {{personality}}".to_string(),
-            scenario_format: "Dialogue scenario: {{scenario}}".to_string(),
             settings: Settings::default(),
         }
     }
@@ -263,21 +251,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             renew_always: true,
-            retry_regenerate: false,
             prompt_experiments: true,
             system_experiments: true,
             prevent_imperson: true,
-            all_samples: false,
-            no_samples: false,
-            strip_assistant: false,
-            strip_human: false,
             pass_params: false,
-            clear_flags: true,
             preserve_chats: false,
             log_messages: true,
-            full_colon: true,
             padtxt: "1000,1000,15000".to_string(),
-            xml_plot: true,
             skip_restricted: false,
             artifacts: false,
         }

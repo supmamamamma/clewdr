@@ -41,7 +41,6 @@ pub static TEST_MESSAGE: LazyLock<Message> = LazyLock::new(|| Message {
     content: "Hi".to_string(),
     customname: None,
     name: None,
-    strip: None,
     jailbreak: None,
     main: None,
     discard: None,

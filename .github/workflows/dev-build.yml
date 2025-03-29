@@ -50,19 +50,12 @@ jobs:
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-linux-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: clewdr-linux-${{ matrix.target }}
-          path: clewdr-linux-${{ matrix.target }}.zip
+          path: target/${{ matrix.target_triple }}/release/clewdr
           retention-days: 1
-          compression-level: 0
 
   android:
     name: Build Android (NDK)
@@ -106,21 +99,14 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-android-${{ matrix.target }}.zip clewdr $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so
-        working-directory: ${{ github.workspace }}
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: clewdr-android-${{ matrix.target }}
-          path: clewdr-android-${{ matrix.target }}.zip
+          path: |
+            target/${{ matrix.target_triple }}/release/clewdr
+            $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so
           retention-days: 1
-          compression-level: 0
 
   musllinux:
     name: Build Linux (musl)
@@ -176,19 +162,12 @@ jobs:
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-musllinux-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: clewdr-musllinux-${{ matrix.target }}
-          path: clewdr-musllinux-${{ matrix.target }}.zip
+          path: target/${{ matrix.target_triple }}/release/clewdr
           retention-days: 1
-          compression-level: 0
 
   windows:
     name: Build Windows
@@ -217,19 +196,12 @@ jobs:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        shell: pwsh
-        run: |
-          Compress-Archive -Path 'target\${{ matrix.target_triple }}\release\clewdr.exe' -DestinationPath "clewdr-windows-${{ matrix.target }}.zip" -CompressionLevel Optimal -Force
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: clewdr-windows-${{ matrix.target }}
-          path: clewdr-windows-${{ matrix.target }}.zip
+          path: target/${{ matrix.target_triple }}/release/clewdr.exe
           retention-days: 1
-          compression-level: 0
 
   macos:
     name: Build macOS
@@ -259,16 +231,9 @@ jobs:
       - name: Build for ${{ matrix.target }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-macos-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: clewdr-macos-${{ matrix.target }}
-          path: clewdr-macos-${{ matrix.target }}.zip
+          path: target/${{ matrix.target_triple }}/release/clewdr
           retention-days: 1
-          compression-level: 0
