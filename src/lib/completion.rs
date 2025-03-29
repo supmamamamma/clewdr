@@ -1,10 +1,11 @@
 use crate::{
-    SUPER_CLIENT, TITLE,
+    TITLE,
+    client::{AppendHeaders, SUPER_CLIENT},
     config::UselessReason,
     error::{ClewdrError, check_res_err},
     state::AppState,
     stream::{ClewdrTransformer, StreamConfig},
-    utils::{ENDPOINT, TEST_MESSAGE, TIME_ZONE, header_ref, print_out_json, print_out_text},
+    utils::{ENDPOINT, TEST_MESSAGE, TIME_ZONE, print_out_json, print_out_text},
 };
 use axum::{
     Json,
@@ -14,7 +15,7 @@ use axum::{
 };
 use eventsource_stream::EventStream;
 use regex::{Regex, RegexBuilder};
-use rquest::header::{ACCEPT, COOKIE, ORIGIN, REFERER};
+use rquest::header::ACCEPT;
 use serde_json::json;
 use tracing::{debug, warn};
 
@@ -161,7 +162,7 @@ impl AppState {
             return Err(ClewdrError::NoValidKey);
         }
         if s.is_pro.read().is_none() && *s.model.read() != *s.cookie_model.read() {
-            self.cookie_shifter(UselessReason::Null);
+            self.cookie_rotate(UselessReason::Null);
             return Err(ClewdrError::NoValidKey);
         }
         if p.messages.is_empty() {
@@ -261,9 +262,7 @@ impl AppState {
         let api_res = SUPER_CLIENT
             .post(endpoint)
             .json(&body)
-            .header_append(ORIGIN, ENDPOINT)
-            .header_append(REFERER, header_ref(""))
-            .header_append(COOKIE, self.header_cookie())
+            .append_headers("", &self.header_cookie()?)
             .send()
             .await?;
         debug!("New conversation created");
@@ -422,16 +421,14 @@ impl AppState {
         let api_res = SUPER_CLIENT
             .post(endpoint)
             .json(&body)
-            .header_append(ORIGIN, ENDPOINT)
-            .header_append(REFERER, header_ref(""))
+            .append_headers("", self.header_cookie()?)
             .header_append(ACCEPT, "text/event-stream")
-            .header_append(COOKIE, self.header_cookie())
             .send()
             .await?;
         self.update_cookie_from_res(&api_res);
         let api_res = check_res_err(api_res).await.inspect_err(|e| {
             if let ClewdrError::TooManyRequest(_, i) = e {
-                self.cookie_shifter(UselessReason::Temporary(*i));
+                self.cookie_rotate(UselessReason::Temporary(*i));
             }
         })?;
         let trans = ClewdrTransformer::new(StreamConfig::new(

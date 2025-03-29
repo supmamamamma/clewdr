@@ -57,6 +57,8 @@ pub enum ClewdrError {
     PathNotFound(String),
     #[error("Invalid timestamp: {0}")]
     TimestampError(i64),
+    #[error("Wait for cookie rotation")]
+    CookieRotating,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

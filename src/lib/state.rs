@@ -1,37 +1,35 @@
-use std::{collections::HashMap, sync::Arc};
-
-use colored::Colorize;
 use parking_lot::RwLock;
 use regex::Regex;
 use regex::RegexBuilder;
 use rquest::Response;
-use rquest::header::COOKIE;
-use rquest::header::ORIGIN;
-use rquest::header::REFERER;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::{collections::HashMap, sync::Arc};
 use tokio::time::sleep;
 use tokio::{spawn, time::Duration};
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
-use crate::SUPER_CLIENT;
+use crate::client::AppendHeaders;
+use crate::client::SUPER_CLIENT;
 use crate::config::UselessCookie;
 use crate::config::UselessReason;
 use crate::error::ClewdrError;
-use crate::utils::header_ref;
 use crate::{completion::Message, config::Config, utils::ENDPOINT};
 
 #[derive(Default)]
 pub struct InnerState {
     pub config: RwLock<Config>,
     pub model_list: RwLock<Vec<String>>,
+    init_length: u64,
+    rotating: AtomicBool,
     pub is_pro: RwLock<Option<String>>,
     pub cookie_model: RwLock<Option<String>>,
     pub uuid_org: RwLock<String>,
-    pub change_times: RwLock<usize>,
-    pub total_times: usize,
     pub model: RwLock<Option<String>>,
-    pub cookies: RwLock<HashMap<String, String>>,
+    cookies: RwLock<HashMap<String, String>>,
     pub uuid_org_array: RwLock<Vec<String>>,
     pub conv_uuid: RwLock<Option<String>>,
     pub conv_char: RwLock<Option<String>>,
@@ -46,10 +44,9 @@ pub struct AppState(pub Arc<InnerState>);
 
 impl AppState {
     pub fn new(config: Config) -> Self {
-        let total_times = config.cookie_array.len();
         let m = InnerState {
+            init_length: config.cookie_array_len() as u64,
             config: RwLock::new(config),
-            total_times,
             ..Default::default()
         };
         let m = Arc::new(m);
@@ -90,26 +87,34 @@ impl AppState {
             });
     }
 
-    pub fn header_cookie(&self) -> String {
+    pub fn header_cookie(&self) -> Result<String, ClewdrError> {
+        if self.0.rotating.load(Ordering::Relaxed) {
+            return Err(ClewdrError::CookieRotating);
+        }
         let cookies = self.0.cookies.read();
-        cookies
+        Ok(cookies
             .iter()
             .map(|(name, value)| format!("{}={}", name, value))
             .collect::<Vec<_>>()
             .join("; ")
             .trim()
-            .to_string()
+            .to_string())
     }
 
-    pub fn cookie_shifter(&self, reason: UselessReason) {
-        let mut config = self.0.config.write();
-        if config.current_cookie_info().is_none() {
+    pub fn cookie_rotate(&self, reason: UselessReason) {
+        static SHIFTS: AtomicU64 = AtomicU64::new(0);
+        if SHIFTS.load(Ordering::Relaxed) == self.0.init_length {
+            error!("Cookie used up, not rotating");
             return;
         }
+        let mut config = self.0.config.write();
+        let Some(current_cookie) = config.current_cookie_info() else {
+            return;
+        };
         match reason {
             UselessReason::Temporary(i) => {
                 warn!("Temporary useless cookie, not cleaning");
-                config.current_cookie_info().unwrap().reset_time = Some(i);
+                current_cookie.reset_time = Some(i);
                 config.save().unwrap_or_else(|e| {
                     error!("Failed to save config: {}", e);
                 });
@@ -120,10 +125,7 @@ impl AppState {
             }
         }
         // rotate the cookie
-        let array_len = config.cookie_array.len();
-        let index = &mut config.cookie_index;
-        *index = (*index + 1) % array_len as i32;
-        println!("{}", "Changing cookie".green());
+        config.rotate_cookie();
         config.save().unwrap_or_else(|e| {
             error!("Failed to save config: {}", e);
         });
@@ -136,10 +138,13 @@ impl AppState {
         };
         let dur = Duration::from_secs(dur as u64);
         let self_clone = self.clone();
+        SHIFTS.fetch_add(1, Ordering::Relaxed);
         spawn(async move {
+            self_clone.0.rotating.store(true, Ordering::Relaxed);
             sleep(dur).await;
             self_clone.bootstrap().await;
-            warn!("Cookie shifting complete");
+            warn!("Cookie rotating complete");
+            self_clone.0.rotating.store(false, Ordering::Relaxed);
         });
     }
 
@@ -153,9 +158,10 @@ impl AppState {
             warn!("No current cookie info found");
             return;
         }
-        let current_index = config.cookie_index as usize;
-        let mut config = self.0.config.write();
-        let current_cookie = config.cookie_array.remove(current_index);
+        let Some(current_cookie) = config.delete_current_cookie() else {
+            warn!("No current cookie found");
+            return;
+        };
         config.cookie.clear();
         config
             .wasted_cookie
@@ -185,12 +191,9 @@ impl AppState {
         let endpoint = istate.config.read().endpoint("api/organizations");
         let uuid_org = istate.uuid_org.read().clone();
         let endpoint = format!("{}/{}/chat_conversations/{}", endpoint, uuid_org, uuid);
-        let cookies = self.header_cookie();
         let res = SUPER_CLIENT
             .delete(endpoint.clone())
-            .header_append(ORIGIN, ENDPOINT)
-            .header_append(REFERER, header_ref(""))
-            .header_append(COOKIE, cookies)
+            .append_headers("", self.header_cookie()?)
             .send()
             .await?;
         self.update_cookie_from_res(&res);

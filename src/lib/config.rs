@@ -163,16 +163,16 @@ impl<'de> Deserialize<'de> for Cookie {
 pub struct Config {
     // Cookie configurations
     pub cookie: Cookie,
-    pub cookie_array: Vec<CookieInfo>,
+    cookie_array: Vec<CookieInfo>,
     pub wasted_cookie: Vec<UselessCookie>,
     pub unknown_models: Vec<String>,
 
     // Network settings
     pub cookie_counter: u32,
-    pub cookie_index: i32,
+    cookie_index: i32,
     pub proxy_password: String,
-    pub ip: String,
-    pub port: u16,
+    ip: String,
+    port: u16,
     pub local_tunnel: bool,
 
     // Performance settings
@@ -359,6 +359,40 @@ impl Config {
         } else {
             None
         }
+    }
+
+    pub fn index(&self) -> i32 {
+        self.cookie_index
+    }
+
+    pub fn delete_current_cookie(&mut self) -> Option<CookieInfo> {
+        if self.cookie_index < 0 {
+            return None;
+        }
+        if self.cookie_index < self.cookie_array.len() as i32 {
+            let index = self.cookie_index as usize;
+            let removed = self.cookie_array.remove(index);
+            if index == self.cookie_array.len() {
+                self.cookie_index -= 1;
+            }
+            warn!("Removed cookie: {}", removed.cookie.to_string().red());
+            return Some(removed);
+        }
+        None
+    }
+
+    pub fn cookie_array_len(&self) -> usize {
+        self.cookie_array.len()
+    }
+
+    pub fn rotate_cookie(&mut self) {
+        if self.cookie_array.is_empty() {
+            return;
+        }
+        let array_len = self.cookie_array.len();
+        let index = &mut self.cookie_index;
+        *index = (*index + 1) % array_len as i32;
+        warn!("Rotating cookie to index {}", index.to_string().green());
     }
 
     pub fn validate(mut self) -> Self {

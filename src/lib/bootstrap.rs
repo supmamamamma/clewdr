@@ -1,14 +1,13 @@
 use colored::Colorize;
-use rquest::header::{COOKIE, ORIGIN, REFERER};
 use serde_json::{Value, json};
 use tracing::error;
 
 use crate::{
-    SUPER_CLIENT,
+    client::{AppendHeaders, SUPER_CLIENT},
     config::UselessReason,
     error::{ClewdrError, check_res_err},
     state::AppState,
-    utils::{ENDPOINT, JsBool, MODELS, header_ref},
+    utils::{ENDPOINT, JsBool, MODELS},
 };
 
 impl AppState {
@@ -18,14 +17,12 @@ impl AppState {
             let mut config = istate.config.write();
             if let Some(current_cookie) = config.current_cookie_info().cloned() {
                 config.cookie = current_cookie.cookie.clone();
-
-                *istate.change_times.write() += 1;
                 if istate.model.read().is_some()
                     && current_cookie.model.is_some()
                     && !current_cookie.is_pro()
                     && istate.model.read().as_ref().unwrap() != &current_cookie.model.unwrap()
                 {
-                    self.cookie_shifter(UselessReason::Null);
+                    self.cookie_rotate(UselessReason::Null);
                     return;
                 }
             }
@@ -35,7 +32,7 @@ impl AppState {
         if let Err(ClewdrError::JsError(v)) = res {
             if Some(json!("Invalid authorization")) == v.message {
                 error!("{}", "Invalid authorization".red());
-                self.cookie_shifter(UselessReason::Invalid);
+                self.cookie_rotate(UselessReason::Invalid);
             }
         }
     }
@@ -43,10 +40,6 @@ impl AppState {
     async fn try_bootstrap(&self) -> Result<(), ClewdrError> {
         let istate = self.0.clone();
         let config = istate.config.read().clone();
-        let percentage = ((*istate.change_times.read() as f32)
-            + config.cookie_index.saturating_sub(1) as f32)
-            / (istate.total_times as f32)
-            * 100.0;
         if !config.cookie.validate() {
             error!("{}", "Invalid Cookie, enter apiKey-only mode.".red());
             return Ok(());
@@ -55,16 +48,14 @@ impl AppState {
         let end_point = config.endpoint("api/bootstrap");
         let res = SUPER_CLIENT
             .get(end_point.clone())
-            .header_append("Origin", ENDPOINT)
-            .header_append("Referer", header_ref(""))
-            .header_append("Cookie", self.header_cookie())
+            .append_headers("", self.header_cookie()?)
             .send()
             .await?;
         let res = check_res_err(res).await?;
         let bootstrap = res.json::<Value>().await?;
         if bootstrap["account"].is_null() {
             println!("{}", "Null Error, Useless Cookie".red());
-            self.cookie_shifter(UselessReason::Null);
+            self.cookie_rotate(UselessReason::Null);
             return Ok(());
         }
         let memberships = bootstrap["account"]["memberships"]
@@ -136,16 +127,14 @@ impl AppState {
             && istate.model.read().is_some()
             && istate.model.read().as_ref() != cookie_model.as_ref()
         {
-            self.cookie_shifter(UselessReason::Null);
+            self.cookie_rotate(UselessReason::Null);
             return Ok(());
         }
         let config = istate.config.read().clone();
-        let index = if config.cookie_array.is_empty() {
+        let index = if config.index() < 0 {
             "".to_string()
         } else {
-            format!("(Index: {}) ", config.cookie_index)
-                .blue()
-                .to_string()
+            format!("(Index: {}) ", config.index()).blue().to_string()
         };
         let name = boot_acc_info
             .get("name")
@@ -187,7 +176,7 @@ impl AppState {
             .get("account")
             .and_then(|a| a.get("completed_verification_at"))
             .js_bool();
-        if (uuid_included && percentage <= 100.0 && !config.cookie_array.is_empty())
+        if (uuid_included && !config.cookie_array_len() == 0)
             || (api_disabled_reason && !api_disabled_until)
             || !completed_verification_at
         {
@@ -199,7 +188,7 @@ impl AppState {
                 UselessReason::Overlap
             };
             println!("Cookie is useless, reason: {}", reason.to_string().red());
-            self.cookie_shifter(reason);
+            self.cookie_rotate(reason);
             return Ok(());
         } else {
             istate.uuid_org_array.write().push(uuid.to_string());
@@ -211,9 +200,7 @@ impl AppState {
         let end_point = format!("{}/api/organizations", end_point);
         let res = SUPER_CLIENT
             .get(end_point.clone())
-            .header_append("Origin", ENDPOINT)
-            .header_append("Referer", header_ref(""))
-            .header_append("Cookie", self.header_cookie())
+            .append_headers("", self.header_cookie()?)
             .send()
             .await?;
         self.update_cookie_from_res(&res);
@@ -277,7 +264,6 @@ impl AppState {
                 &config.rproxy
             };
             let endpoint = format!("{}/api/organizations/{}", endpoint, istate.uuid_org.read());
-            let cookies = self.header_cookie();
             if config.settings.clear_flags && !active_flags.is_empty() {
                 // drop the lock before the async call
                 drop(config);
@@ -289,15 +275,15 @@ impl AppState {
                     .map(|t| {
                         let t = t.to_string();
                         let endpoint = endpoint.clone();
-                        let cookies = cookies.clone();
                         async move {
                             let endpoint =
                                 format!("{}/flags/{}/dismiss", endpoint.clone(), t.clone());
+                            let Ok(cookies) = self.header_cookie() else {
+                                return;
+                            };
                             let Ok(res) = SUPER_CLIENT
                                 .post(endpoint.clone())
-                                .header_append(ORIGIN, ENDPOINT)
-                                .header_append(REFERER, header_ref(""))
-                                .header_append(COOKIE, cookies)
+                                .append_headers("", cookies)
                                 .send()
                                 .await
                                 .inspect_err(|e| {
@@ -340,14 +326,14 @@ impl AppState {
                     "{}",
                     "Your account is banned, please use another account.".red()
                 );
-                self.cookie_shifter(UselessReason::Banned);
+                self.cookie_rotate(UselessReason::Banned);
                 return Ok(());
             } else {
                 // Restricted
                 println!("{}", "Your account is restricted.".red());
                 if self.0.config.read().settings.skip_restricted && restrict_until > 0 {
                     println!("skip_restricted is enabled, skipping...");
-                    self.cookie_shifter(UselessReason::Temporary(restrict_until));
+                    self.cookie_rotate(UselessReason::Temporary(restrict_until));
                     return Ok(());
                 }
             }
@@ -359,7 +345,6 @@ impl AppState {
         if preview_feature_uses_artifacts != self.0.config.read().settings.artifacts {
             let endpoint = self.0.config.read().endpoint("api/account");
             let endpoint = format!("{}/api/account", endpoint);
-            let cookies = self.header_cookie();
             let mut account_settings = bootstrap
                 .pointer("/account/settings")
                 .and_then(|a| a.as_object())
@@ -374,9 +359,7 @@ impl AppState {
             });
             let res = SUPER_CLIENT
                 .post(endpoint.clone())
-                .header_append(ORIGIN, ENDPOINT)
-                .header_append(REFERER, header_ref(""))
-                .header_append(COOKIE, cookies)
+                .append_headers("", self.header_cookie()?)
                 .json(&body)
                 .send()
                 .await?;
@@ -390,13 +373,10 @@ impl AppState {
             .and_then(|u| u.as_str())
             .unwrap_or_default();
         let endpoint = format!("{}/{}/chat_conversations", endpoint, uuid);
-        let cookies = self.header_cookie();
         // mess the cookie a bit to see error message
         let res = SUPER_CLIENT
             .get(endpoint.clone())
-            .header_append(ORIGIN, ENDPOINT)
-            .header_append(REFERER, header_ref(""))
-            .header_append(COOKIE, cookies)
+            .append_headers("", self.header_cookie()?)
             .send()
             .await?;
         self.update_cookie_from_res(&res);

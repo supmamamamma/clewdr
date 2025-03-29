@@ -9,7 +9,7 @@ use const_format::{concatc, formatc};
 use serde_json::{Value, json};
 use tower_http::trace::TraceLayer;
 
-use crate::{NORMAL_CLIENT, completion::completion, state::AppState, utils::MODELS};
+use crate::{client::NORMAL_CLIENT, completion::completion, state::AppState, utils::MODELS};
 
 pub struct RouterBuilder {
     inner: Router,

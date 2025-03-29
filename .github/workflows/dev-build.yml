@@ -44,6 +44,8 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
@@ -93,6 +95,8 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         run: |
           cargo install cargo-ndk
@@ -101,7 +105,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
-  
+
       - name: Archive build artifacts
         run: |
           cd target/${{ matrix.target_triple }}/release
@@ -163,6 +167,8 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
@@ -199,6 +205,8 @@ jobs:
           choco install llvm -y
           choco install nasm -y
         shell: cmd
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build on Windows with Static Linking
         env:
@@ -240,6 +248,8 @@ jobs:
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build for ${{ matrix.target }}
         run: cargo build --release --target ${{ matrix.target_triple }}
