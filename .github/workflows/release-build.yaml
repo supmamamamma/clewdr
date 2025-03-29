@@ -53,22 +53,18 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-linux-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clewdr-linux-${{ matrix.target }} # 产物名称保持不变，用于后续下载
-          path: clewdr-linux-${{ matrix.target }}.zip
-          retention-days: 1 # 产物保留时间（天），足够release作业下载即可
+          name: clewdr-linux-${{ matrix.target }}
+          path: target/${{ matrix.target_triple }}/release/clewdr
+          retention-days: 1
 
   android:
     name: Build Android (NDK)
@@ -102,6 +98,8 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         run: |
           cargo install cargo-ndk
@@ -109,19 +107,14 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
-  
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-android-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clewdr-android-${{ matrix.target }} # 产物名称保持不变
-          path: clewdr-android-${{ matrix.target }}.zip
+          name: clewdr-android-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target_triple }}/release/clewdr
+            $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so
           retention-days: 1
 
   musllinux:
@@ -172,21 +165,17 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         env: ${{ matrix.custom_env }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-musllinux-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clewdr-musllinux-${{ matrix.target }} # 产物名称保持不变
-          path: clewdr-musllinux-${{ matrix.target }}.zip
+          name: clewdr-musllinux-${{ matrix.target }}
+          path: target/${{ matrix.target_triple }}/release/clewdr
           retention-days: 1
 
   windows:
@@ -209,22 +198,18 @@ jobs:
           choco install nasm -y
         shell: cmd
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build on Windows with Static Linking
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        shell: pwsh
-        run: |
-          Compress-Archive -Path 'target\${{ matrix.target_triple }}\release\clewdr.exe' -DestinationPath "clewdr-windows-${{ matrix.target }}.zip" -CompressionLevel Optimal -Force
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clewdr-windows-${{ matrix.target }} # 产物名称保持不变
-          path: clewdr-windows-${{ matrix.target }}.zip
+          name: clewdr-windows-${{ matrix.target }}
+          path: target/${{ matrix.target_triple }}/release/clewdr.exe
           retention-days: 1
 
   macos:
@@ -250,20 +235,16 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target_triple }}
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build for ${{ matrix.target }}
         run: cargo build --release --target ${{ matrix.target_triple }}
 
-      - name: Archive build artifacts
-        run: |
-          cd target/${{ matrix.target_triple }}/release
-          zip -r ../../../clewdr-macos-${{ matrix.target }}.zip clewdr
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clewdr-macos-${{ matrix.target }} # 产物名称保持不变
-          path: clewdr-macos-${{ matrix.target }}.zip
+          name: clewdr-macos-${{ matrix.target }}
+          path: target/${{ matrix.target_triple }}/release/clewdr
           retention-days: 1
 
   # 新增 release 作业
@@ -289,7 +270,7 @@ jobs:
         with:
           # action 会自动使用触发工作流的 tag (github.ref)
           # files 指定要上传的资源文件路径，使用通配符匹配所有下载的 zip 文件
-          files: artifacts/*/*.zip 
+          files: artifacts/*/*
           # 可选: 如果你想自动生成 Release Notes（基于 Conventional Commits）
           # generate_release_notes: true 
           # 可选: 如果你想创建 draft release
