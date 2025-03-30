@@ -6,22 +6,18 @@ use axum::{
     extract::State,
     response::{IntoResponse, Response},
 };
-use base64::{Engine, prelude::BASE64_STANDARD};
-use futures::future::join_all;
-use rquest::{
-    header::ACCEPT,
-    multipart::{Form, Part},
-};
+use rquest::header::ACCEPT;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::{
-    client::{AppendHeaders, SUPER_CLIENT},
+    client::{AppendHeaders, SUPER_CLIENT, upload_images},
     config::UselessReason,
     error::{ClewdrError, check_res_err},
     state::AppState,
-    types::message::{ContentBlock, ImageSource, Message, MessageContent, Role},
+    text::merge_messages,
+    types::message::{ContentBlock, ImageSource, Message, Role},
     utils::{TIME_ZONE, print_out_json},
 };
 
@@ -35,7 +31,27 @@ pub static TEST_MESSAGE: LazyLock<Message> = LazyLock::new(|| {
 });
 
 #[derive(Deserialize, Serialize, Debug)]
+struct Attachment {
+    extracted_content: String,
+    file_name: String,
+    file_type: String,
+    file_size: u64,
+}
+
+impl Attachment {
+    fn new(content: String) -> Self {
+        Attachment {
+            file_size: content.bytes().len() as u64,
+            extracted_content: content,
+            file_name: "paste.txt".to_string(),
+            file_type: "txt".to_string(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct RequestBody {
+    attachments: Vec<Attachment>,
     files: Vec<String>,
     model: String,
     rendering_mode: String,
@@ -58,46 +74,21 @@ pub struct ClientRequestBody {
     system: Value,
 }
 
-impl From<ClientRequestBody> for RequestBody {
-    fn from(value: ClientRequestBody) -> Self {
-        let mut images = vec![];
-        let prompt = value
-            .messages
-            .iter()
-            .map(|m| {
-                let r = match m.role {
-                    Role::User => "User: ",
-                    Role::Assistant => "Assistant: ",
-                };
-                let c = match &m.content {
-                    MessageContent::Text { content } => content.clone(),
-                    MessageContent::Blocks { content } => content
-                        .iter()
-                        .map_while(|b| match b {
-                            ContentBlock::Text { text } => Some(text.trim().to_string()),
-                            ContentBlock::Image { source } => {
-                                images.push(source.clone());
-                                None
-                            }
-                            _ => None,
-                        })
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                };
-                format!("{}{}", r, c)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        Self {
-            files: vec![],
-            model: value.model,
-            rendering_mode: "messages".to_string(),
-            prompt,
-            timezone: TIME_ZONE.to_string(),
-            images,
-        }
-    }
+fn transform(value: ClientRequestBody, user_real_roles: bool) -> Option<RequestBody> {
+    let merged = merge_messages(value.messages, user_real_roles)?;
+    let first = merged.head;
+    let last = merged.tail;
+    let images = merged.images;
+    let attachment = Attachment::new(first);
+    Some(RequestBody {
+        attachments: vec![attachment],
+        files: vec![],
+        model: value.model,
+        rendering_mode: "messages".to_string(),
+        prompt: last,
+        timezone: TIME_ZONE.to_string(),
+        images,
+    })
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -125,7 +116,7 @@ impl AppState {
         print_out_json(&p, "0.req.json");
 
         // Check if the request is a test message
-        if !p.stream && p.messages.len() == 1 && p.messages[0] == *TEST_MESSAGE {
+        if !p.stream && p.messages == vec![TEST_MESSAGE.clone()] {
             return Ok(json!({
                 "content": [
                     {
@@ -169,72 +160,25 @@ impl AppState {
         check_res_err(api_res).await?;
 
         // prepare the request
-        let mut body: RequestBody = p.into();
+        let user_real_roles = s.config.read().user_real_roles;
+        let Some(mut body) = transform(p, user_real_roles) else {
+            return Ok(json!({
+                "content": [
+                    {
+                        "text": "Empty message",
+                        "type": "text"
+                    }
+                ],
+            })
+            .to_string()
+            .into_response());
+        };
         // check images
         let images = mem::take(&mut body.images);
 
         // upload images
-        let fut = images
-            .into_iter()
-            .map_while(|img| {
-                if img.type_ != "base64" {
-                    warn!("Image type is not base64");
-                    return None;
-                }
-                let Ok(bytes) = BASE64_STANDARD.decode(img.data.as_bytes()) else {
-                    warn!("Failed to decode base64 image");
-                    return None;
-                };
-                let file_name = match img.media_type.as_str() {
-                    "image/png" => "image.png",
-                    "image/jpeg" => "image.jpg",
-                    "image/gif" => "image.gif",
-                    "image/webp" => "image.webp",
-                    "application/pdf" => "document.pdf",
-                    _ => "file",
-                };
-                let part = Part::bytes(bytes).file_name(file_name);
-                let form = Form::new().part("file", part);
-
-                let endpoint = format!("https://claude.ai/api/{}/upload", s.uuid_org.read(),);
-                Some(
-                    SUPER_CLIENT
-                        .post(endpoint)
-                        .append_headers("new", self.header_cookie().ok()?)
-                        .header_append("anthropic-client-platform", "web_claude_ai")
-                        .multipart(form)
-                        .send(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        // get upload responses
-        let fut = join_all(fut)
-            .await
-            .into_iter()
-            .map_while(|r| {
-                r.inspect_err(|e| {
-                    warn!("Failed to upload image: {:?}", e);
-                })
-                .ok()
-            })
-            .map(|r| async {
-                let json = r
-                    .json::<Value>()
-                    .await
-                    .inspect_err(|e| {
-                        warn!("Failed to parse image response: {:?}", e);
-                    })
-                    .ok()?;
-                Some(json["file_uuid"].as_str()?.to_string())
-            })
-            .collect::<Vec<_>>();
-
-        let files = join_all(fut)
-            .await
-            .into_iter()
-            .filter_map(|r| r)
-            .collect::<Vec<_>>();
+        let uuid_org = s.uuid_org.read().clone();
+        let files = upload_images(images, self.header_cookie()?, uuid_org).await;
         body.files = files;
 
         // file processed

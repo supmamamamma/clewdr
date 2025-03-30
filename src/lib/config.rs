@@ -89,6 +89,7 @@ pub struct Config {
     // Prompt templates
     pub prompt_experiment_first: String,
     pub prompt_experiment_next: String,
+    pub user_real_roles: bool,
 
     // Nested settings section
     #[serde(default)]
@@ -243,6 +244,7 @@ impl Default for Config {
             prompt_experiment_first: String::new(),
             prompt_experiment_next: String::new(),
             settings: Settings::default(),
+            user_real_roles: false,
         }
     }
 }

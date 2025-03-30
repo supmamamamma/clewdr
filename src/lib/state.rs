@@ -14,7 +14,6 @@ use tracing::warn;
 
 use crate::client::AppendHeaders;
 use crate::client::SUPER_CLIENT;
-use crate::config;
 use crate::config::UselessReason;
 use crate::error::ClewdrError;
 use crate::{config::Config, utils::ENDPOINT};
@@ -22,19 +21,14 @@ use crate::{config::Config, utils::ENDPOINT};
 #[derive(Default)]
 pub struct InnerState {
     pub config: RwLock<Config>,
-    pub model_list: RwLock<Vec<String>>,
     init_length: u64,
     rotating: AtomicBool,
     pub is_pro: RwLock<Option<String>>,
-    pub cookie_model: RwLock<Option<String>>,
     pub uuid_org: RwLock<String>,
     pub model: RwLock<Option<String>>,
     cookies: RwLock<HashMap<String, String>>,
     pub uuid_org_array: RwLock<Vec<String>>,
     pub conv_uuid: RwLock<Option<String>>,
-    pub conv_char: RwLock<Option<String>>,
-    pub prev_impersonated: RwLock<bool>,
-    pub regex_log: RwLock<String>,
 }
 
 #[derive(Clone)]
@@ -156,7 +150,7 @@ impl AppState {
         let uuid = self.0.conv_uuid.write().take();
         let config = self.0.config.read().clone();
         let uuid_org = self.0.uuid_org.read().clone();
-        if uuid.clone().map_or(true, |u| u.is_empty()) {
+        if uuid.clone().is_none_or(|u| u.is_empty()) {
             return Ok(());
         }
         let uuid = uuid.unwrap();

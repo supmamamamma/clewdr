@@ -85,13 +85,6 @@ async fn get_models(
         a.cmp(b)
     });
     data.dedup();
-    // write to model_list
-    let mut model_list = api_state.model_list.write();
-    model_list.clear();
-    model_list.extend(
-        data.iter()
-            .filter_map(|model| model["id"].as_str().map(|s| s.to_string())),
-    );
     let response = json!({
         "data": data,
     });

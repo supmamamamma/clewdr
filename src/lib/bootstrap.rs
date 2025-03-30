@@ -96,7 +96,6 @@ impl AppState {
             }
         }
         *istate.is_pro.write() = is_pro.clone();
-        *istate.cookie_model.write() = cookie_model.clone();
 
         // Check if cookie model is unknown (not in known models or in config's unknown models)
         {
