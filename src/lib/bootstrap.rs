@@ -303,31 +303,6 @@ impl AppState {
             self.update_cookie_from_res(&res);
             check_res_err(res).await?;
         }
-        let endpoint = self.0.config.read().endpoint("api/organizations");
-        let uuid = acc_info
-            .get("uuid")
-            .and_then(|u| u.as_str())
-            .unwrap_or_default();
-        let endpoint = format!("{}/{}/chat_conversations", endpoint, uuid);
-        // mess the cookie a bit to see error message
-        let res = SUPER_CLIENT
-            .get(endpoint.clone())
-            .append_headers("", self.header_cookie()?)
-            .send()
-            .await?;
-        self.update_cookie_from_res(&res);
-        let ret_json = res.json::<Value>().await?;
-        let cons = ret_json.as_array().cloned().unwrap_or_default();
-        let futures = cons
-            .iter()
-            .filter_map(|c| {
-                c.get("uuid")
-                    .and_then(|u| u.as_str())
-                    .map(|u| u.to_string())
-            })
-            .map(|u| self.delete_chat(u))
-            .collect::<Vec<_>>();
-        futures::future::join_all(futures).await;
         Ok(())
     }
 }

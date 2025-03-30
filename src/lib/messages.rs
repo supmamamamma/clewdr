@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{fmt::Debug, mem, sync::LazyLock};
 
 use axum::{
     Json,
@@ -6,8 +6,13 @@ use axum::{
     extract::State,
     response::{IntoResponse, Response},
 };
-use rquest::header::ACCEPT;
-use serde::{Deserialize, Serialize, ser::SerializeMap};
+use base64::{Engine, prelude::BASE64_STANDARD};
+use futures::future::join_all;
+use rquest::{
+    header::ACCEPT,
+    multipart::{Form, Part},
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
@@ -16,152 +21,81 @@ use crate::{
     config::UselessReason,
     error::{ClewdrError, check_res_err},
     state::AppState,
+    types::message::{ContentBlock, ImageSource, Message, MessageContent, Role},
     utils::{TIME_ZONE, print_out_json},
 };
 
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
-pub struct ReqMessage {
-    role: String,
-    content: Content,
-}
-
-pub static TEST_MESSAGE: LazyLock<ReqMessage> = LazyLock::new(|| ReqMessage {
-    role: "user".to_string(),
-    content: Content::Array(vec![ContentType::Text {
-        text: "Hi".to_string(),
-        r#type: "text".to_string(),
-    }]),
+pub static TEST_MESSAGE: LazyLock<Message> = LazyLock::new(|| {
+    Message::new_blocks(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Hi".to_string(),
+        }],
+    )
 });
-
-#[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
-enum Content {
-    Array(Vec<ContentType>),
-    Raw(String),
-}
-
-impl Serialize for Content {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Content::Array(arr) => {
-                let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry("array", arr)?;
-                map.end()
-            }
-            Content::Raw(text) => {
-                let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry("raw", text)?;
-                map.end()
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Content {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let val = serde_json::Value::deserialize(deserializer)?;
-        if let Some(str) = val.as_str() {
-            return Ok(Content::Raw(str.to_string()));
-        }
-        let vec: Vec<ContentType> = val
-            .as_array()
-            .ok_or_else(|| serde::de::Error::custom("Expected an array"))?
-            .iter()
-            .map(|v| {
-                serde_json::from_value(v.clone()).map_err(|e| {
-                    serde::de::Error::custom(format!("Failed to deserialize ContentType: {}", e))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Content::Array(vec))
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
-enum ContentType {
-    Text { text: String, r#type: String },
-}
-
-impl Serialize for ContentType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            ContentType::Text { text, r#type } => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("text", text)?;
-                map.serialize_entry("type", r#type)?;
-                map.end()
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ContentType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let map = serde_json::Value::deserialize(deserializer)?;
-        let text = map.get("text").and_then(Value::as_str).unwrap_or_default();
-        let r#type = map.get("type").and_then(Value::as_str).unwrap_or_default();
-        Ok(ContentType::Text {
-            text: text.to_string(),
-            r#type: r#type.to_string(),
-        })
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct ResponseBody {
-    max_tokens: Option<u64>,
-    messages: Vec<ReqMessage>,
-    stop_sequences: Vec<String>,
-    model: String,
-    stream: bool,
-    thinking: Option<Thinking>,
-    system: Value,
-}
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct RequestBody {
-    files: Vec<Value>,
+    files: Vec<String>,
     model: String,
     rendering_mode: String,
     prompt: String,
     timezone: String,
+    #[serde(skip)]
+    images: Vec<ImageSource>,
 }
 
-impl From<ResponseBody> for RequestBody {
-    fn from(value: ResponseBody) -> Self {
+#[derive(Deserialize, Serialize, Debug)]
+pub struct ClientRequestBody {
+    max_tokens: Option<u64>,
+    messages: Vec<Message>,
+    stop_sequences: Vec<String>,
+    model: String,
+    #[serde(default)]
+    stream: bool,
+    thinking: Option<Thinking>,
+    #[serde(default)]
+    system: Value,
+}
+
+impl From<ClientRequestBody> for RequestBody {
+    fn from(value: ClientRequestBody) -> Self {
+        let mut images = vec![];
+        let prompt = value
+            .messages
+            .iter()
+            .map(|m| {
+                let r = match m.role {
+                    Role::User => "User: ",
+                    Role::Assistant => "Assistant: ",
+                };
+                let c = match &m.content {
+                    MessageContent::Text { content } => content.clone(),
+                    MessageContent::Blocks { content } => content
+                        .iter()
+                        .map_while(|b| match b {
+                            ContentBlock::Text { text } => Some(text.trim().to_string()),
+                            ContentBlock::Image { source } => {
+                                images.push(source.clone());
+                                None
+                            }
+                            _ => None,
+                        })
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                };
+                format!("{}{}", r, c)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         Self {
             files: vec![],
             model: value.model,
             rendering_mode: "messages".to_string(),
-            prompt: value
-                .messages
-                .into_iter()
-                .map(|m| match m.content {
-                    Content::Array(arr) => arr
-                        .into_iter()
-                        .map(|ct| match ct {
-                            ContentType::Text { text, .. } => format!("{}: {}", m.role, text),
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    Content::Raw(text) => format!("{}: {}", m.role, text),
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
+            prompt,
             timezone: TIME_ZONE.to_string(),
+            images,
         }
     }
 }
@@ -172,7 +106,10 @@ struct Thinking {
     r#type: String,
 }
 
-pub async fn api_messages(State(state): State<AppState>, Json(p): Json<ResponseBody>) -> Response {
+pub async fn api_messages(
+    State(state): State<AppState>,
+    Json(p): Json<ClientRequestBody>,
+) -> Response {
     match state.try_message(p).await {
         Ok(b) => b.into_response(),
         Err(e) => {
@@ -183,29 +120,30 @@ pub async fn api_messages(State(state): State<AppState>, Json(p): Json<ResponseB
 }
 
 impl AppState {
-    async fn try_message(&self, p: ResponseBody) -> Result<Response, ClewdrError> {
+    async fn try_message(&self, p: ClientRequestBody) -> Result<Response, ClewdrError> {
         let s = self.0.clone();
-        debug!("Messages processed: {:?}", p);
-        if !p.stream && p.messages.len() == 1 && p.messages.first() == Some(&TEST_MESSAGE) {
+        print_out_json(&p, "0.req.json");
+
+        // Check if the request is a test message
+        if !p.stream && p.messages.len() == 1 && p.messages[0] == *TEST_MESSAGE {
             return Ok(json!({
-              "content": [
-                {
-                  "text": "Hi! My name is Doge.",
-                  "type": "text"
-                }
-              ],
-            }
-                        )
+                "content": [
+                    {
+                        "text": "Hi! My name is Doge.",
+                        "type": "text"
+                    }
+                ],
+            })
             .to_string()
             .into_response());
         }
-        let uuid = s.conv_uuid.read().clone();
-        if let Some(uuid) = uuid {
-            self.delete_chat(uuid).await?;
-        }
+
+        // delete the previous conversation if it exists
+        self.delete_chat().await?;
         debug!("Chat deleted");
+
+        // Create a new conversation
         *s.conv_uuid.write() = Some(uuid::Uuid::new_v4().to_string());
-        *s.conv_depth.write() = 0;
         let endpoint = s.config.read().endpoint("");
         let endpoint = format!(
             "{}/api/organizations/{}/chat_conversations",
@@ -229,12 +167,78 @@ impl AppState {
         debug!("New conversation created");
         self.update_cookie_from_res(&api_res);
         check_res_err(api_res).await?;
-        // TODO: 我 log 你的吗，log 都写那么难看
-        // finally, send the request
 
-        let body: RequestBody = p.into();
+        // prepare the request
+        let mut body: RequestBody = p.into();
+        // check images
+        let images = mem::take(&mut body.images);
+
+        // upload images
+        let fut = images
+            .into_iter()
+            .map_while(|img| {
+                if img.type_ != "base64" {
+                    warn!("Image type is not base64");
+                    return None;
+                }
+                let Ok(bytes) = BASE64_STANDARD.decode(img.data.as_bytes()) else {
+                    warn!("Failed to decode base64 image");
+                    return None;
+                };
+                let file_name = match img.media_type.as_str() {
+                    "image/png" => "image.png",
+                    "image/jpeg" => "image.jpg",
+                    "image/gif" => "image.gif",
+                    "image/webp" => "image.webp",
+                    "application/pdf" => "document.pdf",
+                    _ => "file",
+                };
+                let part = Part::bytes(bytes).file_name(file_name);
+                let form = Form::new().part("file", part);
+
+                let endpoint = format!("https://claude.ai/api/{}/upload", s.uuid_org.read(),);
+                Some(
+                    SUPER_CLIENT
+                        .post(endpoint)
+                        .append_headers("new", self.header_cookie().ok()?)
+                        .header_append("anthropic-client-platform", "web_claude_ai")
+                        .multipart(form)
+                        .send(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // get upload responses
+        let fut = join_all(fut)
+            .await
+            .into_iter()
+            .map_while(|r| {
+                r.inspect_err(|e| {
+                    warn!("Failed to upload image: {:?}", e);
+                })
+                .ok()
+            })
+            .map(|r| async {
+                let json = r
+                    .json::<Value>()
+                    .await
+                    .inspect_err(|e| {
+                        warn!("Failed to parse image response: {:?}", e);
+                    })
+                    .ok()?;
+                Some(json["file_uuid"].as_str()?.to_string())
+            })
+            .collect::<Vec<_>>();
+
+        let files = join_all(fut)
+            .await
+            .into_iter()
+            .filter_map(|r| r)
+            .collect::<Vec<_>>();
+        body.files = files;
+
+        // file processed
         print_out_json(&body, "4.req.json");
-        debug!("Req body processed");
         let endpoint = s.config.read().endpoint("");
         let endpoint = format!(
             "{}/api/organizations/{}/chat_conversations/{}/completion",
@@ -256,6 +260,8 @@ impl AppState {
                 self.cookie_rotate(UselessReason::Temporary(*i));
             }
         })?;
+
+        // stream the response
         let input_stream = api_res.bytes_stream();
         Ok(Body::from_stream(input_stream).into_response())
     }

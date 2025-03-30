@@ -9,6 +9,7 @@ pub mod messages;
 pub mod router;
 pub mod state;
 pub mod utils;
+pub mod types;
 
 pub const TITLE: &str = formatc!(
     "Clewdr v{} by {}",

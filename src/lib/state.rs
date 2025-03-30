@@ -14,6 +14,7 @@ use tracing::warn;
 
 use crate::client::AppendHeaders;
 use crate::client::SUPER_CLIENT;
+use crate::config;
 use crate::config::UselessReason;
 use crate::error::ClewdrError;
 use crate::{config::Config, utils::ENDPOINT};
@@ -32,7 +33,6 @@ pub struct InnerState {
     pub uuid_org_array: RwLock<Vec<String>>,
     pub conv_uuid: RwLock<Option<String>>,
     pub conv_char: RwLock<Option<String>>,
-    pub conv_depth: RwLock<i64>,
     pub prev_impersonated: RwLock<bool>,
     pub regex_log: RwLock<String>,
 }
@@ -100,6 +100,12 @@ impl AppState {
     }
 
     pub fn cookie_rotate(&self, reason: UselessReason) {
+        let self_clone = self.clone();
+        spawn(async move {
+            if let Ok(err) = self_clone.delete_chat().await {
+                error!("Failed to delete chat: {:?}", err);
+            }
+        });
         static SHIFTS: AtomicU64 = AtomicU64::new(0);
         if SHIFTS.load(Ordering::Relaxed) == self.0.init_length {
             error!("Cookie used up, not rotating");
@@ -146,24 +152,19 @@ impl AppState {
         });
     }
 
-    pub async fn delete_chat(&self, uuid: String) -> Result<(), ClewdrError> {
-        if uuid.is_empty() {
+    pub async fn delete_chat(&self) -> Result<(), ClewdrError> {
+        let uuid = self.0.conv_uuid.write().take();
+        let config = self.0.config.read().clone();
+        let uuid_org = self.0.uuid_org.read().clone();
+        if uuid.clone().map_or(true, |u| u.is_empty()) {
             return Ok(());
         }
-        let istate = self.0.clone();
-        let conv_uuid = istate.conv_uuid.read().clone();
-        if let Some(conv_uuid) = conv_uuid {
-            if uuid == conv_uuid {
-                istate.conv_uuid.write().take();
-                debug!("Deleting chat: {}", uuid);
-                *istate.conv_depth.write() = 0;
-            }
-        };
-        if istate.config.read().settings.preserve_chats {
+        let uuid = uuid.unwrap();
+        if config.settings.preserve_chats {
             return Ok(());
         }
-        let endpoint = istate.config.read().endpoint("api/organizations");
-        let uuid_org = istate.uuid_org.read().clone();
+        debug!("Deleting chat: {}", uuid);
+        let endpoint = config.endpoint("api/organizations");
         let endpoint = format!("{}/{}/chat_conversations/{}", endpoint, uuid_org, uuid);
         let res = SUPER_CLIENT
             .delete(endpoint.clone())
