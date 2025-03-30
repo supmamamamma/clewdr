@@ -9,7 +9,7 @@ use const_format::{concatc, formatc};
 use serde_json::{Value, json};
 use tower_http::trace::TraceLayer;
 
-use crate::{client::NORMAL_CLIENT, completion::completion, state::AppState, utils::MODELS};
+use crate::{client::NORMAL_CLIENT, messages::api_messages, state::AppState, utils::MODELS};
 
 pub struct RouterBuilder {
     inner: Router,
@@ -20,8 +20,7 @@ impl RouterBuilder {
         Self {
             inner: Router::new()
                 .route("/v1/models", get(get_models))
-                .route("/v1/chat/completions", post(completion))
-                .route("/v1/complete", post(api_complete))
+                .route("/v1/messages", post(api_messages))
                 .route("/v1", options(api_options))
                 .route("/", options(api_options))
                 .fallback(api_fallback)
@@ -97,18 +96,6 @@ async fn get_models(
         "data": data,
     });
     Ok(Json(response))
-}
-
-async fn api_complete() -> (StatusCode, Json<Value>) {
-    let json = json!(
-        {
-            "error":{
-                "message":                "Clewdr: Set \"Chat Completion source\" to OpenAI instead of Claude. Enable \"External\" models aswell",
-                "code": 404,
-            }
-        }
-    );
-    (StatusCode::NOT_FOUND, Json(json))
 }
 
 async fn api_fallback(req: Request) -> Html<&'static str> {

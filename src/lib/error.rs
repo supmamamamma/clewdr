@@ -1,11 +1,7 @@
-use std::fmt::Display;
-
-use eventsource_stream::EventStreamError;
 use rquest::Response;
 use serde_json::{Value, json};
+use std::fmt::Display;
 use tracing::{error, warn};
-
-use crate::stream::ClewdrTransformer;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ClewdrError {
@@ -23,12 +19,6 @@ pub enum ClewdrError {
     RquestError(#[from] rquest::Error),
     #[error("UTF8 error: {0}")]
     UTF8Error(#[from] std::string::FromUtf8Error),
-    #[error("Stream cancelled")]
-    StreamCancelled(ClewdrTransformer),
-    #[error("Stream internal error, no further information available")]
-    StreamInternalError(ClewdrTransformer),
-    #[error("Stream end")]
-    StreamEndNormal(ClewdrTransformer),
     #[error("JavaScript error {0}")]
     JsError(JsError),
     #[error("Too many requests: {0}")]
@@ -43,16 +33,6 @@ pub enum ClewdrError {
     IoError(#[from] std::io::Error),
     #[error("Invalid model name: {0}")]
     InvalidModel(String),
-    #[error("HardCensor detected")]
-    HardCensor(ClewdrTransformer),
-    #[error("Impersonation detected")]
-    Impersonation(ClewdrTransformer),
-    #[error("Empty stream")]
-    EmptyStream(ClewdrTransformer),
-    #[error("Unknown Stream error: {1}")]
-    UnknownStreamError(ClewdrTransformer, String),
-    #[error("Input stream error: {0}")]
-    EventSourceError(EventStreamError<rquest::Error>),
     #[error("Config error: {0}")]
     PathNotFound(String),
     #[error("Invalid timestamp: {0}")]

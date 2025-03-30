@@ -1,16 +1,14 @@
 use clap::Parser;
 use const_format::formatc;
 
-pub mod router;
-pub mod completion;
+pub mod bootstrap;
+pub mod client;
 pub mod config;
 pub mod error;
-pub mod stream;
-pub mod text;
-pub mod utils;
-pub mod bootstrap;
+pub mod messages;
+pub mod router;
 pub mod state;
-pub mod client;
+pub mod utils;
 
 pub const TITLE: &str = formatc!(
     "Clewdr v{} by {}",

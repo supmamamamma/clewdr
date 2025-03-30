@@ -8,7 +8,6 @@ authors = ["Xerxes-2"]
 path = "src/lib/lib.rs"
 
 [dependencies]
-claude-tokenizer = "0.3"
 tokio = { version = "1", features = ["full"] }
 rquest = { version = "5", features = ["json", "stream"] }
 rquest-util = "2"
@@ -18,7 +17,13 @@ figlet-rs = "0.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 colored = "3"
-axum = { version = "0.8", features = ["json", "tracing", "tokio", "macros"] }
+axum = { version = "0.8", features = [
+    "json",
+    "tracing",
+    "tokio",
+    "macros",
+    "http2",
+] }
 regex = "1"
 tracing = { version = "0.1", features = [
     "max_level_debug",
@@ -30,11 +35,6 @@ chrono = "0.4"
 parking_lot = { version = "0.12", features = ["send_guard"] }
 futures = "0.3"
 thiserror = "2"
-tokio-util = "0.7"
-tokio-stream = "0.1"
-transform-stream = "0.3"
-bytes = "1"
 uuid = { version = "1.16.0", features = ["v4"] }
-eventsource-stream = "0.2"
 tower-http = { version = "0.6", features = ["trace"] }
 clap = { version = "4", features = ["derive"] }

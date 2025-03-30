@@ -16,7 +16,7 @@ use crate::client::AppendHeaders;
 use crate::client::SUPER_CLIENT;
 use crate::config::UselessReason;
 use crate::error::ClewdrError;
-use crate::{completion::Message, config::Config, utils::ENDPOINT};
+use crate::{config::Config, utils::ENDPOINT};
 
 #[derive(Default)]
 pub struct InnerState {
@@ -33,7 +33,6 @@ pub struct InnerState {
     pub conv_uuid: RwLock<Option<String>>,
     pub conv_char: RwLock<Option<String>>,
     pub conv_depth: RwLock<i64>,
-    pub prev_messages: RwLock<Vec<Message>>,
     pub prev_impersonated: RwLock<bool>,
     pub regex_log: RwLock<String>,
 }
